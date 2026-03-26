@@ -178,11 +178,145 @@ else
 fi
 
 echo ""
-echo "Migration complete."
-[ "$DRY_RUN" = true ] && echo "Run without --dry-run to execute."
+
+if [ "$DRY_RUN" = true ]; then
+  echo "Migration preview complete. Run without --dry-run to execute."
+  exit 0
+fi
+
+# ── Verify and clean up ──────────────────────────────────────────────
+
+echo "Verifying migration..."
+errors=0
+
+verify_project() {
+  local key=$1
+  local config_file="${OLD_PROJECTS_DIR}/${key}.json"
+  [ -f "$config_file" ] || return
+
+  local project_path
+  project_path=$(python3 -c "import json; print(json.load(open('$config_file'))['path'])" 2>/dev/null)
+  [ -z "$project_path" ] || [ ! -d "$project_path" ] && return
+
+  local autoclaw_dir="${project_path}/.autoclaw"
+  [ ! -d "$autoclaw_dir" ] && { echo "  FAIL: $key — .autoclaw/ not created"; errors=$((errors + 1)); return; }
+
+  # Verify config
+  [ ! -f "$autoclaw_dir/config.json" ] && { echo "  FAIL: $key — config.json missing"; errors=$((errors + 1)); }
+
+  # Verify experiments (if old file existed)
+  local old_exp="${OLD_WORKSPACE}/experiments-${key}.jsonl"
+  if [ -f "$old_exp" ] && [ -s "$old_exp" ]; then
+    if [ ! -f "$autoclaw_dir/experiments.jsonl" ]; then
+      echo "  FAIL: $key — experiments.jsonl missing"
+      errors=$((errors + 1))
+    else
+      local old_lines=$(wc -l < "$old_exp" | tr -d ' ')
+      local new_lines=$(wc -l < "$autoclaw_dir/experiments.jsonl" | tr -d ' ')
+      if [ "$old_lines" != "$new_lines" ]; then
+        echo "  WARN: $key — experiments line count mismatch (old=$old_lines new=$new_lines)"
+      fi
+    fi
+  fi
+
+  # Verify memory
+  local old_mem="${OLD_WORKSPACE}/memory/${key}"
+  if [ -d "$old_mem" ]; then
+    for f in project-memory.json finding-memory.jsonl; do
+      if [ -f "$old_mem/$f" ] && [ ! -f "$autoclaw_dir/memory/$f" ]; then
+        echo "  FAIL: $key — memory/$f missing"
+        errors=$((errors + 1))
+      fi
+    done
+  fi
+
+  # Verify reviews
+  local old_reviews="${project_path}/.deep-review-logs"
+  if [ -d "$old_reviews" ] && [ "$(ls -A "$old_reviews" 2>/dev/null)" ]; then
+    if [ ! -d "$autoclaw_dir/reviews" ] || [ -z "$(ls -A "$autoclaw_dir/reviews" 2>/dev/null)" ]; then
+      echo "  FAIL: $key — reviews/ not migrated"
+      errors=$((errors + 1))
+    fi
+  fi
+}
+
+if [ -n "$TARGET_PROJECT" ]; then
+  verify_project "$TARGET_PROJECT"
+else
+  for config_file in "$OLD_PROJECTS_DIR"/*.json; do
+    [ -f "$config_file" ] || continue
+    verify_project "$(basename "$config_file" .json)"
+  done
+fi
+
+if [ "$errors" -gt 0 ]; then
+  echo ""
+  echo "Verification found $errors issue(s). Old data will NOT be removed."
+  echo "Fix the issues above and re-run the migration."
+  exit 1
+fi
+
+echo "  All verified."
 echo ""
-echo "Old data was COPIED (not moved). Once verified, you can remove:"
-echo "  rm -rf ~/.openclaw/workspace/autoresearch/memory/"
-echo "  rm -rf ~/.openclaw/workspace/autoresearch/cycles/"
-echo "  rm ~/.openclaw/workspace/autoresearch/experiments-*.jsonl"
-echo "  rm -rf <project>/.deep-review-logs/"
+
+# ── Clean up old locations ────────────────────────────────────────────
+
+echo "Cleaning up old data..."
+
+cleanup_project() {
+  local key=$1
+  local config_file="${OLD_PROJECTS_DIR}/${key}.json"
+  [ -f "$config_file" ] || return
+
+  local project_path
+  project_path=$(python3 -c "import json; print(json.load(open('$config_file'))['path'])" 2>/dev/null)
+  [ -z "$project_path" ] && return
+
+  # Remove old experiments
+  local old_exp="${OLD_WORKSPACE}/experiments-${key}.jsonl"
+  [ -f "$old_exp" ] && rm -f "$old_exp" && echo "  Removed $old_exp"
+
+  # Remove old memory
+  local old_mem="${OLD_WORKSPACE}/memory/${key}"
+  [ -d "$old_mem" ] && rm -rf "$old_mem" && echo "  Removed $old_mem/"
+
+  # Remove old cycles
+  local old_cycles="${OLD_WORKSPACE}/cycles"
+  if [ -d "$old_cycles" ]; then
+    local count=0
+    for f in "$old_cycles"/${key}-exp-*.json; do
+      [ -f "$f" ] || continue
+      rm -f "$f"
+      count=$((count + 1))
+    done
+    [ $count -gt 0 ] && echo "  Removed $count old cycle files"
+  fi
+
+  # Remove old run log
+  local old_log="${OLD_WORKSPACE}/run-${key}.log"
+  [ -f "$old_log" ] && rm -f "$old_log" && echo "  Removed $old_log"
+
+  # Remove old program
+  local old_program="${OLD_WORKSPACE}/program-${key}.md"
+  [ -f "$old_program" ] && rm -f "$old_program" && echo "  Removed $old_program"
+
+  # Remove old .deep-review-logs
+  local old_reviews="${project_path}/.deep-review-logs"
+  [ -d "$old_reviews" ] && rm -rf "$old_reviews" && echo "  Removed $old_reviews/"
+}
+
+if [ -n "$TARGET_PROJECT" ]; then
+  cleanup_project "$TARGET_PROJECT"
+else
+  for config_file in "$OLD_PROJECTS_DIR"/*.json; do
+    [ -f "$config_file" ] || continue
+    cleanup_project "$(basename "$config_file" .json)"
+  done
+fi
+
+# Clean up empty legacy directories
+[ -d "${OLD_WORKSPACE}/memory" ] && rmdir "${OLD_WORKSPACE}/memory" 2>/dev/null && echo "  Removed empty memory/"
+[ -d "${OLD_WORKSPACE}/cycles" ] && [ -z "$(ls -A "${OLD_WORKSPACE}/cycles" 2>/dev/null)" ] && rmdir "${OLD_WORKSPACE}/cycles" 2>/dev/null && echo "  Removed empty cycles/"
+
+echo ""
+echo "Migration complete. All data now lives in <project>/.autoclaw/"
