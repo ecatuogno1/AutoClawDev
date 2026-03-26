@@ -421,7 +421,7 @@ function normalizeDimension(value: number | undefined, fallback: number) {
 
 export function attachTerminalWebSocketServer(server: HttpServer) {
   const sessions = new TerminalSessionManager();
-  const wss = new WebSocketServer({ server, path: "/ws/terminal" });
+  const wss = new WebSocketServer({ noServer: true });
 
   wss.on("connection", (ws) => {
     ws.on("message", (raw) => {
@@ -459,6 +459,17 @@ export function attachTerminalWebSocketServer(server: HttpServer) {
 
     ws.on("close", () => {
       sessions.detachSocket(ws);
+    });
+  });
+
+  server.on("upgrade", (request, socket, head) => {
+    const pathname = request.url ? new URL(request.url, "http://localhost").pathname : "";
+    if (pathname !== "/ws/terminal") {
+      return;
+    }
+
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request);
     });
   });
 

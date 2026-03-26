@@ -15,6 +15,7 @@ import memoryRouter from "./routes/memory.js";
 import healthRouter from "./routes/health.js";
 import chatRouter from "./routes/chat.js";
 import workspaceRouter from "./routes/workspace.js";
+import { attachChatWebSocketServer } from "./chatSession/wsChatServer.js";
 import { attachTerminalWebSocketServer } from "./terminal/wsTerminalServer.js";
 
 const app = express();
@@ -47,6 +48,7 @@ if (existsSync(webDist)) {
 
 const server = createServer(app);
 attachTerminalWebSocketServer(server);
+attachChatWebSocketServer(server);
 
 server.listen(PORT, () => {
   console.log(`AutoClawDev server running on http://localhost:${PORT}`);
