@@ -1,6 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useProject } from "@/lib/api";
-import { ProjectTabs } from "@/components/ProjectTabs";
 import { WorkspaceView } from "@/components/workspace/WorkspaceView";
 
 export const Route = createFileRoute("/projects/$projectKey/workspace")({
@@ -39,8 +38,6 @@ function ProjectWorkspacePage() {
           IDE-style layout shell for browsing project files and coding tools.
         </p>
       </div>
-
-      <ProjectTabs projectKey={projectKey} activeTab="workspace" />
 
       {isLoading ? (
         <div className="flex-1 rounded-xl border border-[#30363d] bg-[#161b22] animate-pulse" />

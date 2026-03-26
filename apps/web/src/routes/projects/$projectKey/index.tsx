@@ -9,7 +9,6 @@ import {
   useReviews,
   useProjectMemory,
 } from "@/lib/api";
-import { ProjectTabs } from "@/components/ProjectTabs";
 import { ExperimentRow } from "@/components/ExperimentRow";
 import { RunButton } from "@/components/RunButton";
 import { RunChat } from "@/components/RunChat";
@@ -204,8 +203,6 @@ function ProjectDetail() {
           </div>
         )}
       </div>
-
-      <ProjectTabs projectKey={projectKey} activeTab="runs" />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
