@@ -30,17 +30,28 @@ PLAN_FILE=""
 PROVIDER="claude"
 START_PHASE=""
 
+LIST_MODE=false
+
 for arg in "$@"; do
   case "$arg" in
     --claude)     PROVIDER="claude" ;;
     --codex)      PROVIDER="codex" ;;
     --codex-fast) PROVIDER="codex-fast" ;;
     --phase)      shift; START_PHASE="${1:-}" ;;
+    --list|-l)    LIST_MODE=true ;;
     --help|-h)
       echo "Usage: build.sh <project-key> <plan-file> [--claude|--codex|--codex-fast] [--phase N]"
+      echo "       build.sh <project-key> --list"
       echo ""
       echo "Executes a markdown build plan phase by phase."
       echo "Each ## Phase heading becomes a separate AI session."
+      echo ""
+      echo "Options:"
+      echo "  --list, -l     List build plans for the project"
+      echo "  --phase N      Start from phase N"
+      echo "  --claude       Use Claude Opus (default)"
+      echo "  --codex        Use Codex GPT-5.4"
+      echo "  --codex-fast   Use Codex GPT-5.4 fast"
       exit 0
       ;;
     -*)           ;;
@@ -53,6 +64,100 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+# ── List mode ────────────────────────────────────────────────────────
+
+if [ "$LIST_MODE" = true ]; then
+  if [ -z "$PROJECT_KEY" ]; then
+    echo "Usage: build.sh <project-key> --list"
+    exit 1
+  fi
+
+  PROJECT_FILE="$PROJECTS_DIR/${PROJECT_KEY}.json"
+  if [ ! -f "$PROJECT_FILE" ]; then
+    echo "ERROR: Project not found: $PROJECT_FILE"
+    exit 1
+  fi
+
+  PROJECT_PATH=$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['path'])" "$PROJECT_FILE")
+  BUILDS_DIR="$PROJECT_PATH/.autoclaw/builds"
+  DONE_DIR="$BUILDS_DIR/.done"
+
+  if [ ! -d "$BUILDS_DIR" ]; then
+    echo "No build plans for $PROJECT_KEY"
+    exit 0
+  fi
+
+  active=0
+  done_count=0
+
+  echo ""
+  echo "Build plans for $PROJECT_KEY:"
+  echo ""
+
+  set +e  # disable strict mode for list — greps returning 0 matches are fine
+  for d in "$BUILDS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    name=$(basename "$d")
+    [ "$name" = ".done" ] && continue
+
+    plan_file="$d/plan.md"
+    progress_file="$d/progress.md"
+
+    if [ ! -f "$plan_file" ]; then
+      continue
+    fi
+
+    # Count phases and completed phases
+    phases=$(grep -cE "^#{1,3} Phase [0-9]" "$plan_file" 2>/dev/null || true)
+    [ -z "$phases" ] && phases=0
+    # Also check phase-*.md files
+    phase_files=$(ls "$d"/phase-*.md 2>/dev/null | wc -l | tr -d ' ')
+    [ "$phase_files" -gt "$phases" ] && phases="$phase_files"
+
+    completed=0
+    if [ -f "$progress_file" ]; then
+      completed=$(grep -c "^\- \[x\]" "$progress_file" 2>/dev/null || true)
+      [ -z "$completed" ] && completed=0
+    fi
+
+    criteria=$(cat "$d"/*.md 2>/dev/null | grep -c "^\- \[ \]" || true)
+    [ -z "$criteria" ] && criteria=0
+
+    if [ "$completed" -ge "$phases" ] && [ "$phases" -gt 0 ]; then
+      status="✓ done"
+    elif [ "$completed" -gt 0 ]; then
+      status="◐ $completed/$phases"
+    else
+      status="○ not started"
+    fi
+
+    printf "  %-25s %s  (%d phases, %d criteria)\n" "$name" "$status" "$phases" "$criteria"
+    active=$((active + 1))
+  done
+
+  # Show done plans
+  if [ -d "$DONE_DIR" ]; then
+    for d in "$DONE_DIR"/*/; do
+      [ -d "$d" ] || continue
+      name=$(basename "$d")
+      done_count=$((done_count + 1))
+    done
+    if [ "$done_count" -gt 0 ]; then
+      echo ""
+      echo "  Completed ($done_count):"
+      for d in "$DONE_DIR"/*/; do
+        [ -d "$d" ] || continue
+        printf "    ✓ %s\n" "$(basename "$d")"
+      done
+    fi
+  fi
+
+  set -e  # re-enable strict mode
+  [ "$active" -eq 0 ] && [ "$done_count" -eq 0 ] && echo "  No build plans found."
+  echo ""
+  exit 0
+fi
 
 # Handle --phase with next arg
 for i in $(seq 1 $#); do
@@ -533,6 +638,18 @@ fi
   echo "phases_completed=$(grep -c '^\- \[x\]' "$PROGRESS_FILE" 2>/dev/null || echo 0)"
   echo "total_phases=${#PHASE_NAMES[@]}"
 } | tee -a "$META_LOG"
+
+# ── Archive if all phases done ────────────────────────────────────────
+
+completed_count=$(grep -c '^\- \[x\]' "$PROGRESS_FILE" 2>/dev/null || echo 0)
+if [ "$completed_count" -ge "${#PHASE_NAMES[@]}" ] && [ "${#PHASE_NAMES[@]}" -gt 0 ] && [ -n "$PLAN_DIR" ]; then
+  DONE_DIR="$(dirname "$PLAN_DIR")/.done"
+  PLAN_NAME="$(basename "$PLAN_DIR")"
+  mkdir -p "$DONE_DIR"
+  mv "$PLAN_DIR" "$DONE_DIR/$PLAN_NAME"
+  echo ""
+  echo "All ${#PHASE_NAMES[@]} phases verified. Plan archived to .done/$PLAN_NAME"
+fi
 
 echo ""
 echo "Build complete."

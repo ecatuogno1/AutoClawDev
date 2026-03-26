@@ -4,6 +4,7 @@ import { useActiveRuns } from "@/lib/api";
 const navItems = [
   { to: "/", label: "Command Center", icon: "grid" },
   { to: "/chat", label: "Chat", icon: "chat" },
+  { to: "/workspace", label: "Workspace", icon: "code" },
   { to: "/projects", label: "Projects", icon: "folder" },
   { to: "/experiments", label: "Experiments", icon: "flask" },
   { to: "/live", label: "Live", icon: "terminal" },
@@ -16,6 +17,7 @@ const icons: Record<string, string> = {
   folder: "M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z",
   flask: "M9 3v8.5L4.5 19a2 2 0 001.7 3h11.6a2 2 0 001.7-3L15 11.5V3M8 3h8",
   terminal: "M4 17l6-5-6-5M12 19h8",
+  code: "M8 9l-4 3 4 3m8-6l4 3-4 3m-2-9l-4 12",
   gear: "M12 15a3 3 0 100-6 3 3 0 000 6z",
 };
 
@@ -23,6 +25,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const routerState = useRouterState();
   const currentPath = routerState.location.pathname;
   const { data: activeRuns } = useActiveRuns();
+  const isWorkspaceRoute = currentPath.startsWith("/workspace");
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -81,7 +84,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main content */}
-      <main className="flex-1 overflow-auto bg-[#0d1117]">{children}</main>
+      <main className={`flex-1 bg-[#0d1117] ${isWorkspaceRoute ? "overflow-hidden" : "overflow-auto"}`}>
+        {children}
+      </main>
     </div>
   );
 }
