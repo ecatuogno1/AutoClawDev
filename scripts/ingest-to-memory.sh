@@ -8,7 +8,7 @@ set -euo pipefail
 #   ingest-to-memory.sh <project-key> [--source deep-review|qa-audit|profile]
 #
 # Reads findings from:
-#   deep-review: .deep-review-logs/audit-report.md → finding-memory.jsonl
+#   deep-review: .autoclaw/reviews/audit-report.md → finding-memory.jsonl
 #   qa-audit:    QA output files → finding-memory.jsonl
 #   profile:     Profile validation results → finding-memory.jsonl
 #
@@ -56,7 +56,12 @@ PROGRAM_FILE="$PROJECT_PATH/CLAUDE.md"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 COMMIT=$(git -C "$PROJECT_PATH" rev-parse HEAD 2>/dev/null || echo "unknown")
 
-PROJECT_MEM_DIR="$MEMORY_DIR/$PROJECT_KEY"
+# Use per-project .autoclaw/memory/ if it exists, otherwise legacy
+if [ -d "$PROJECT_PATH/.autoclaw/memory" ]; then
+  PROJECT_MEM_DIR="$PROJECT_PATH/.autoclaw/memory"
+else
+  PROJECT_MEM_DIR="$MEMORY_DIR/$PROJECT_KEY"
+fi
 mkdir -p "$PROJECT_MEM_DIR/locks" "$PROJECT_MEM_DIR/snapshots"
 
 FINDINGS_FILE="$PROJECT_MEM_DIR/finding-memory.jsonl"
@@ -65,9 +70,9 @@ echo "Ingesting $SOURCE findings for $PROJECT_KEY..."
 
 case "$SOURCE" in
   deep-review)
-    AUDIT_REPORT="$PROJECT_PATH/.deep-review-logs/audit-report.md"
-    EXEC_PLAN="$PROJECT_PATH/.deep-review-logs/execution-plan.md"
-    PROGRESS="$PROJECT_PATH/.deep-review-logs/progress.md"
+    AUDIT_REPORT="$PROJECT_PATH/.autoclaw/reviews/audit-report.md"
+    EXEC_PLAN="$PROJECT_PATH/.autoclaw/reviews/execution-plan.md"
+    PROGRESS="$PROJECT_PATH/.autoclaw/reviews/progress.md"
 
     if [ ! -f "$AUDIT_REPORT" ]; then
       echo "No audit report found at $AUDIT_REPORT"

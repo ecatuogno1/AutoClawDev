@@ -2125,6 +2125,7 @@ case "${1:-}" in
   # ── Tools ──────────────────────────────────────────────────────────
   audit)     cmd_audit "${2:-}" "${3:-}" ;;
   ingest|ingest-memory) "$REPO_ROOT/scripts/ingest-to-memory.sh" "${@:2}" ;;
+  migrate) "$REPO_ROOT/scripts/migrate-to-autoclaw.sh" "${@:2}" ;;
   memory|memory-init|mem-init) cmd_memory_init "${2:-}" ;;
   ui)        "$UI_LAUNCHER" "${@:2}" ;;
   doctor)    cmd_doctor ;;

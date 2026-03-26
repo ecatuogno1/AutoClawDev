@@ -33,3 +33,4 @@ __pycache__/
 
 # TanStack Router auto-generated (regenerated on build)
 apps/web/src/routeTree.gen.ts
+.autoclaw/

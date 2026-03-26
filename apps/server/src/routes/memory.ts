@@ -1,7 +1,7 @@
 import { Router, type Router as ExpressRouter } from "express";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { getWorkspacePath } from "../lib/paths.js";
+import { getWorkspacePath, resolveMemoryDir } from "../lib/paths.js";
 import { getProject } from "../lib/config.js";
 
 const router: ExpressRouter = Router();
@@ -35,7 +35,7 @@ router.get("/:key/memory", async (req, res) => {
   const project = await getProject(req.params.key);
   if (!project) return res.status(404).json({ error: "Project not found" });
 
-  const memDir = getWorkspacePath("memory", req.params.key);
+  const memDir = resolveMemoryDir(req.params.key, project.path);
 
   const projectMemoryRaw = await safeReadFile(join(memDir, "project-memory.json"));
   const projectMemory = projectMemoryRaw ? JSON.parse(projectMemoryRaw) : null;

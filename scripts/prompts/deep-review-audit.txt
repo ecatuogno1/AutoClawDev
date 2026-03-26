@@ -34,17 +34,17 @@ Subagent 4 — Dead code and duplicate scan:
 - Find stale configs, abandoned experiments, legacy code
 - Return: list of files/exports to remove or consolidate
 
-After ALL subagents return, synthesize into a SINGLE report and save to `.deep-review-logs/audit-report.md`.
+After ALL subagents return, synthesize into a SINGLE report and save to `.autoclaw/reviews/audit-report.md`.
 
-Then create an execution plan and save to `.deep-review-logs/execution-plan.md` with:
+Then create an execution plan and save to `.autoclaw/reviews/execution-plan.md` with:
 - Phase 1: critical fixes (crashes, security, data integrity)
 - Phase 2: consolidation / cleanup (dead code, duplicates, silent failures)
 - Phase 3: structural refactors (file splitting, pattern unification)
 - Phase 4: feature completion and hardening
 
 Output format — respond with EXACTLY:
-AUDIT_FILE: .deep-review-logs/audit-report.md
-PLAN_FILE: .deep-review-logs/execution-plan.md
+AUDIT_FILE: .autoclaw/reviews/audit-report.md
+PLAN_FILE: .autoclaw/reviews/execution-plan.md
 CRITICAL_COUNT: <number of critical issues>
 HIGH_COUNT: <number of high issues>
 TOTAL_COUNT: <total issues found>

@@ -3,7 +3,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { listProjects } from "../lib/config.js";
 import { getExperiments } from "../lib/experiments.js";
-import { getWorkspacePath } from "../lib/paths.js";
+import { getWorkspacePath, resolveReviewsDir, resolveMemoryDir, resolveLockPath } from "../lib/paths.js";
 
 const router: ExpressRouter = Router();
 
@@ -59,7 +59,7 @@ router.get("/", async (_req, res) => {
     const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
 
     // Check for deep review logs
-    const reviewDir = join(project.path, ".deep-review-logs");
+    const reviewDir = resolveReviewsDir(project.path);
     let lastDeepReview: string | undefined;
     if (await fileExists(reviewDir)) {
       try {
@@ -79,12 +79,13 @@ router.get("/", async (_req, res) => {
     }
 
     // Check memory
-    const memDir = getWorkspacePath("memory", project.key);
+    const memDir = resolveMemoryDir(project.key, project.path);
     const hasMemory = await fileExists(memDir);
 
-    // Check active run
-    const lockFile = join(lockDir, `.lock-${project.key}`);
-    const activeRun = await fileExists(lockFile);
+    // Check active run (check both new and legacy lock locations)
+    const newLock = resolveLockPath(project.key, project.path);
+    const legacyLock = join(lockDir, `.lock-${project.key}`);
+    const activeRun = (await fileExists(newLock)) || (await fileExists(legacyLock));
 
     // Profile status (from last experiment metrics if available)
     const profiles: Record<string, "pass" | "fail" | "unknown"> = {};

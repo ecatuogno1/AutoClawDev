@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
-import { getWorkspaceDir, getWorkspacePath } from "./paths.js";
+import { existsSync } from "node:fs";
+import { getWorkspaceDir, getWorkspacePath, getProjectExperimentsPath } from "./paths.js";
+import { getProject } from "./config.js";
 
 export type ExperimentResult = "pass" | "fail";
 export type ExperimentDomain = "backend" | "frontend" | "unknown";
@@ -89,27 +91,40 @@ function parseExperimentLine(line: string): Experiment | null {
   return null;
 }
 
-export async function getExperiments(key: string): Promise<Experiment[]> {
+async function readExperimentsFromFile(filePath: string, key: string): Promise<Experiment[]> {
   try {
-    const filePath = getWorkspacePath(`experiments-${key}.jsonl`);
     const raw = await readFile(filePath, "utf-8");
     if (!raw.trim()) return [];
-    const lines = raw.trim().split("\n").filter(Boolean);
-    const experiments: Experiment[] = [];
-
-    for (const line of lines) {
-      const parsed = parseExperimentLine(line);
-      if (!parsed) continue;
-      experiments.push({
-        ...parsed,
-        project: key,
-      });
-    }
-
-    return experiments;
+    return raw.trim().split("\n").filter(Boolean)
+      .map((line) => parseExperimentLine(line))
+      .filter((e): e is Experiment => e !== null)
+      .map((e) => ({ ...e, project: key }));
   } catch {
     return [];
   }
+}
+
+export async function getExperiments(key: string): Promise<Experiment[]> {
+  // Try per-project .autoclaw/ first
+  const project = await getProject(key);
+  if (project?.path) {
+    const newPath = getProjectExperimentsPath(project.path);
+    if (existsSync(newPath)) {
+      const results = await readExperimentsFromFile(newPath, key);
+      // Also check legacy and merge (during migration period)
+      const legacyPath = getWorkspacePath(`experiments-${key}.jsonl`);
+      if (existsSync(legacyPath)) {
+        const legacy = await readExperimentsFromFile(legacyPath, key);
+        const seenIds = new Set(results.map((e) => e.id));
+        for (const exp of legacy) {
+          if (!seenIds.has(exp.id)) results.push(exp);
+        }
+      }
+      return results;
+    }
+  }
+  // Legacy fallback
+  return readExperimentsFromFile(getWorkspacePath(`experiments-${key}.jsonl`), key);
 }
 
 export async function getAllExperiments(): Promise<Experiment[]> {

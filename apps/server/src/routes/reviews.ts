@@ -2,6 +2,7 @@ import { Router, type Router as ExpressRouter } from "express";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { getProject } from "../lib/config.js";
+import { resolveReviewsDir } from "../lib/paths.js";
 
 const router: ExpressRouter = Router();
 
@@ -59,7 +60,7 @@ router.get("/:key/reviews", async (req, res) => {
   const project = await getProject(req.params.key);
   if (!project) return res.status(404).json({ error: "Project not found" });
 
-  const logsDir = join(project.path, ".deep-review-logs");
+  const logsDir = resolveReviewsDir(project.path);
   if (!(await fileExists(logsDir))) {
     return res.json({ reviews: [] });
   }
@@ -104,7 +105,7 @@ router.get("/:key/reviews/latest", async (req, res) => {
   const project = await getProject(req.params.key);
   if (!project) return res.status(404).json({ error: "Project not found" });
 
-  const logsDir = join(project.path, ".deep-review-logs");
+  const logsDir = resolveReviewsDir(project.path);
   if (!(await fileExists(logsDir))) {
     return res.status(404).json({ error: "No reviews found" });
   }

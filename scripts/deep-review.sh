@@ -140,8 +140,8 @@ Subagent 4 — Dead code and duplicates:
 - Return: list of files/exports to remove or consolidate
 
 Synthesize all subagent findings into:
-- \`.deep-review-logs/audit-report.md\` — all findings
-- \`.deep-review-logs/execution-plan.md\` — phased fix plan
+- \`.autoclaw/reviews/audit-report.md\` — all findings
+- \`.autoclaw/reviews/execution-plan.md\` — phased fix plan
 
 Phase 2 — FIX (the rest of the session):
 
@@ -155,15 +155,15 @@ After each phase:
 - Run: $TEST_CMD
 - Run: $LINT_CMD
 - Git commit with descriptive message
-- Save progress to \`.deep-review-logs/progress.md\`
+- Save progress to \`.autoclaw/reviews/progress.md\`
 
 Rules:
 - ALWAYS commit at phase boundaries
-- Save progress to \`.deep-review-logs/progress.md\` before context runs out
+- Save progress to \`.autoclaw/reviews/progress.md\` before context runs out
 - Do not make blind changes without tracing dependencies
 
 Resuming:
-- Check \`.deep-review-logs/progress.md\` for previous session state
+- Check \`.autoclaw/reviews/progress.md\` for previous session state
 - Check \`git log --oneline -10\` and \`git diff --stat HEAD\`
 - If resuming, skip audit and continue from the next unfinished phase
 
@@ -177,7 +177,7 @@ PROMPT="$(cat "$PROMPT_FILE")"
 
 # ── Setup provider and logs ──────────────────────────────────────────────────
 
-LOG_DIR="$PROJECT_PATH/.deep-review-logs"
+LOG_DIR="$PROJECT_PATH/.autoclaw/reviews"
 mkdir -p "$LOG_DIR"
 
 STAMP="$(date +"%Y%m%d-%H%M%S")"
@@ -284,7 +284,7 @@ EXIT_CODE=$?
 } | tee -a "$META_LOG"
 
 # ── Ingest findings into memory ──────────────────────────────────────────────
-if [ -f "$LOG_DIR/audit-report.md" ]; then
+if [ -f "$PROJECT_PATH/.autoclaw/reviews/audit-report.md" ] || [ -f "$PROJECT_PATH/.autoclaw/reviews/audit-report.md" ]; then
   echo
   echo "Ingesting deep review findings into AutoClawDev memory..."
   "$SCRIPT_DIR/ingest-to-memory.sh" "$PROJECT_KEY" deep-review 2>&1 || echo "Warning: memory ingestion failed (non-fatal)"
