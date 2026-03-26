@@ -1,0 +1,11 @@
+Implement this change in the repo at {{REPO}}:
+
+Goal: {{GOAL}}
+Finding: {{FINDING}}
+Target: {{TARGET_FILE}}
+Acceptance: {{ACCEPTANCE}}
+
+Make the code changes. Keep them minimal and scoped.
+{{PROFILE_GUIDANCE}}
+{{PROFILE_ADDENDUM}}
+{{IMPL_VALIDATION}}

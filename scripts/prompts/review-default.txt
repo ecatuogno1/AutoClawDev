@@ -1,0 +1,13 @@
+Deep code review of changes at {{REPO}}.
+
+Goal: {{GOAL}}
+Acceptance: {{ACCEPTANCE}}
+
+Current diff:
+{{DIFF_CONTENT}}
+
+{{PROFILE_GUIDANCE}}If you find fixable issues — fix them directly in the files.
+{{REVIEW_VALIDATION}}
+
+Respond EXACTLY:
+{{REVIEW_RESPONSE_FORMAT}}

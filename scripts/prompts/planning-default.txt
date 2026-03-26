@@ -1,0 +1,10 @@
+Plan an atomic code change for the project at {{REPO}}.
+
+Finding: {{FINDING}}
+Target: {{TARGET_FILE}}
+
+{{PROFILE_GUIDANCE}}
+{{FILE_MEMORY_CONTEXT}}
+
+Create a scoped plan completable in one change. Respond EXACTLY:
+{{PLANNING_RESPONSE_FORMAT}}

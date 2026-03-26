@@ -1,0 +1,24 @@
+You are analyzing the codebase at {{REPO}} to find ONE specific improvement.
+
+CRITICAL RULES:
+{{PROFILE_GUIDANCE}}
+
+Program directives (read carefully):
+{{PROGRAM_CONTENT}}
+
+Recent experiments (don't repeat these — do something DIFFERENT):
+{{RECENT}}
+Active reserved work items:
+{{RESERVED_CONTEXT}}
+{{GH_CONTEXT}}
+{{MEMORY_CONTEXT}}
+{{FIXED_FINDINGS}}
+Priority order: {{PRIORITY_ORDER}}
+Only suggest adding tests if you're ALSO fixing a bug that needs a regression test.
+
+Respond with EXACTLY:
+FINDING: <one-line description of the BUG FIX or FEATURE IMPROVEMENT>
+FILE: <production file(s) to change — NOT test files>
+DIRECTIVE: <bug-fix, feature, performance, security, or refactor>
+DOMAIN: backend or frontend
+ISSUE: <GitHub issue number if addressing one, or none>

@@ -1,0 +1,51 @@
+You are performing a deep code review audit of the repository at {{REPO}}.
+
+Your job: systematically explore the entire codebase using PARALLEL SUBAGENTS and produce a structured findings report. You are the coordinator — do NOT crawl the code yourself. Launch subagents and synthesize.
+
+{{PROGRAM_CONTENT}}
+{{MEMORY_CONTEXT}}
+
+Project: {{PROJECT_NAME}}
+Test command: {{TEST_CMD}}
+Lint command: {{LINT_CMD}}
+
+CRITICAL: Launch ALL subagents simultaneously. Do NOT run them sequentially.
+
+Subagent 1 — Backend / server audit:
+- Scan all server-side code for: missing async handlers, unvalidated inputs, missing error handling, dead routes, duplicate endpoints, race conditions, silent catch blocks, broken logic
+- Check database layer for: monolithic files, unused exports, missing indexes, SQL injection risks, N+1 queries
+- Return: list of issues with file:line, severity (critical/high/medium/low), recommended fix
+
+Subagent 2 — Frontend audit:
+- Scan all frontend code for: broken pages, missing API connections, placeholder/stub components, dead imports, broken state management
+- Check route definitions vs actual page implementations — flag mismatches
+- Check API client usage: missing error handling, stale cache, broken invalidation
+- Return: list of issues with file:line, severity, recommended fix
+
+Subagent 3 — Integration and infrastructure audit:
+- Check all external integrations for: broken adapters, missing error handling, incomplete implementations
+- Check Docker configs, deploy scripts, CI for correctness
+- Check environment variable usage and configuration handling
+- Return: list of issues with file:line, severity, recommended fix
+
+Subagent 4 — Dead code and duplicate scan:
+- Find unused files, unused exports, unused components, unused utilities across the entire repo
+- Find duplicate implementations, competing patterns, overlapping features
+- Find stale configs, abandoned experiments, legacy code
+- Return: list of files/exports to remove or consolidate
+
+After ALL subagents return, synthesize into a SINGLE report and save to `.deep-review-logs/audit-report.md`.
+
+Then create an execution plan and save to `.deep-review-logs/execution-plan.md` with:
+- Phase 1: critical fixes (crashes, security, data integrity)
+- Phase 2: consolidation / cleanup (dead code, duplicates, silent failures)
+- Phase 3: structural refactors (file splitting, pattern unification)
+- Phase 4: feature completion and hardening
+
+Output format — respond with EXACTLY:
+AUDIT_FILE: .deep-review-logs/audit-report.md
+PLAN_FILE: .deep-review-logs/execution-plan.md
+CRITICAL_COUNT: <number of critical issues>
+HIGH_COUNT: <number of high issues>
+TOTAL_COUNT: <total issues found>
+SUMMARY: <2-3 sentence summary of findings>

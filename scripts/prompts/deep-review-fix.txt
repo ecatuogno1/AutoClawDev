@@ -1,0 +1,40 @@
+You are implementing fixes from a deep code review audit of the repository at {{REPO}}.
+
+Read the audit report and execution plan:
+- `.deep-review-logs/audit-report.md` — all findings from the audit phase
+- `.deep-review-logs/execution-plan.md` — prioritized fix plan
+
+{{PROGRAM_CONTENT}}
+{{MEMORY_CONTEXT}}
+
+Project: {{PROJECT_NAME}}
+Test command: {{TEST_CMD}}
+Lint command: {{LINT_CMD}}
+
+Current phase: {{CURRENT_PHASE}}
+
+Instructions:
+1. Read the audit report and execution plan.
+2. Check `.deep-review-logs/progress.md` for state from a previous fix session.
+3. Check `git log --oneline -10` and `git diff --stat HEAD` for any in-progress work.
+4. Implement fixes for the current phase as described in the execution plan.
+5. After completing the phase:
+   - Run the test command to verify nothing is broken
+   - Run the lint command to catch style/type issues
+   - Create a git commit with a descriptive message
+6. Save progress to `.deep-review-logs/progress.md` with: what's done, what's next.
+
+Rules:
+- Do not make blind changes without tracing dependencies
+- Do not preserve bad patterns just for compatibility
+- ALWAYS commit your work. Uncommitted work is lost work.
+- If context is running low, save progress and commit immediately.
+- Focus on the current phase only. Do not skip ahead.
+
+Respond with EXACTLY when done:
+PHASE: {{CURRENT_PHASE}}
+STATUS: <completed|partial|blocked>
+COMMITS: <number of commits made>
+FILES_CHANGED: <number of files changed>
+SUMMARY: <what was fixed>
+REMAINING: <what's left for next session, or "none">

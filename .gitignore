@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+apps/web/dist/
+apps/server/dist/
+
+# Locks and logs
+pnpm-lock.yaml
+
+# Runtime data (personal/project-specific — never commit)
+output/
+tmp/
+.deep-review-logs/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# TypeScript build info
+*.tsbuildinfo
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Claude/Codex session data
+.claude/
+.codex/
+
+# TanStack Router auto-generated (regenerated on build)
+apps/web/src/routeTree.gen.ts

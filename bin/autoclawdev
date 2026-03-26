@@ -1,0 +1,2164 @@
+#!/bin/bash
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  🦞 AutoClawDev — Autonomous Dev Team CLI                      ║
+# ║  Full interactive TUI + command-line interface                  ║
+# ╚══════════════════════════════════════════════════════════════════╝
+
+set -uo pipefail
+
+resolve_source() {
+  local source_path=$1
+  while [ -L "$source_path" ]; do
+    local source_dir
+    source_dir=$(cd -P "$(dirname "$source_path")" && pwd)
+    source_path=$(readlink "$source_path")
+    [[ "$source_path" != /* ]] && source_path="$source_dir/$source_path"
+  done
+  cd -P "$(dirname "$source_path")" && pwd
+}
+
+last_arg() {
+  local value=""
+  for value in "$@"; do :; done
+  printf "%s" "$value"
+}
+
+if ! command -v gum >/dev/null 2>&1; then
+  gum() {
+    local subcommand="${1:-}"
+    shift || true
+    case "$subcommand" in
+      style)
+        last_arg "$@"
+        printf "\n"
+        ;;
+      spin)
+        while [ $# -gt 0 ]; do
+          case "$1" in
+            --spinner|--title)
+              shift 2
+              ;;
+            --)
+              shift
+              break
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+        "$@"
+        ;;
+      choose|input|confirm|filter)
+        echo "gum is required for this command" >&2
+        return 127
+        ;;
+      *)
+        echo "gum is required for this command" >&2
+        return 127
+        ;;
+    esac
+  }
+fi
+
+BIN_DIR="$(resolve_source "${BASH_SOURCE[0]}")"
+REPO_ROOT="$(cd "$BIN_DIR/.." && pwd)"
+VERSION_FILE="$REPO_ROOT/VERSION"
+
+PROJECTS_DIR="${AUTOCLAWDEV_PROJECTS_DIR:-$HOME/.local/lib/autoclawdev/projects}"
+WORKSPACE="${AUTOCLAWDEV_WORKSPACE:-$HOME/.openclaw/workspace/autoresearch}"
+RUNNER="${AUTOCLAWDEV_RUNNER:-$REPO_ROOT/scripts/runner.sh}"
+UI_LAUNCHER="${AUTOCLAWDEV_UI_LAUNCHER:-$REPO_ROOT/bin/autoclawdev-ui}"
+MAX_CYCLES=50
+VERSION="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || echo "0.1.0-dev")"
+
+# ── Gum Styling ──────────────────────────────────────────────────────
+export GUM_CHOOSE_CURSOR_FOREGROUND="117"
+export GUM_CHOOSE_SELECTED_FOREGROUND="114"
+export GUM_CHOOSE_HEADER_FOREGROUND="242"
+export GUM_CONFIRM_PROMPT_FOREGROUND="117"
+export GUM_INPUT_CURSOR_FOREGROUND="117"
+export GUM_INPUT_PROMPT_FOREGROUND="215"
+export GUM_SPIN_SPINNER_FOREGROUND="117"
+export GUM_FILTER_INDICATOR_FOREGROUND="114"
+export GUM_FILTER_MATCH_FOREGROUND="117"
+
+# ── Helpers ──────────────────────────────────────────────────────────
+header() {
+  gum style --border rounded --border-foreground 117 --padding "0 2" --margin "1 0" \
+    "$(gum style --foreground 117 --bold '🦞 AutoClawDev')" \
+    "$(gum style --foreground 242 'Autonomous Dev Team · Multi-LLM Engine')" \
+    "$(gum style --foreground 238 "v${VERSION} · Opus + Codex 5.4 + Sonnet + CodeRabbit")"
+}
+
+get_projects() {
+  ls "$PROJECTS_DIR"/*.json 2>/dev/null | while read f; do
+    basename "$f" .json
+  done
+}
+
+get_project_name() {
+  python3 -c "import json;print(json.load(open('$PROJECTS_DIR/$1.json'))['name'])" 2>/dev/null
+}
+
+get_project_field() {
+  python3 -c "import json;print(json.load(open('$PROJECTS_DIR/$1.json')).get('$2',''))" 2>/dev/null
+}
+
+get_project_json_field() {
+  python3 -c "import json; data=json.load(open('$PROJECTS_DIR/$1.json')); print(json.dumps(data.get('$2', {}), separators=(',', ':')))" 2>/dev/null
+}
+
+project_exists() {
+  [ -f "$PROJECTS_DIR/$1.json" ]
+}
+
+normalize_team_profile() {
+  local raw=${1:-reliability}
+  raw=$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr ' _' '--')
+  case "$raw" in
+    reliability|security|performance|test-hardening|frontend-quality|dependency-hygiene|api-contract|data-integrity|privacy-compliance|mobile-quality|refactor-safety|issue-burner)
+      printf "%s" "$raw"
+      ;;
+    tests|test|testing) printf "test-hardening" ;;
+    frontend|ui) printf "frontend-quality" ;;
+    dependency|dependencies|deps) printf "dependency-hygiene" ;;
+    contract|api) printf "api-contract" ;;
+    data) printf "data-integrity" ;;
+    privacy|compliance) printf "privacy-compliance" ;;
+    mobile) printf "mobile-quality" ;;
+    refactor) printf "refactor-safety" ;;
+    issues|issue) printf "issue-burner" ;;
+    *) return 1 ;;
+  esac
+}
+
+team_profile_exists() {
+  normalize_team_profile "$1" >/dev/null 2>&1
+}
+
+list_team_profiles() {
+  cat <<'EOF'
+reliability
+security
+performance
+test-hardening
+frontend-quality
+dependency-hygiene
+api-contract
+data-integrity
+privacy-compliance
+mobile-quality
+refactor-safety
+issue-burner
+EOF
+}
+
+normalize_workflow_type() {
+  local raw=${1:-standard}
+  raw=$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr ' _' '--')
+  case "$raw" in
+    standard|implement-only|review-only|fast-ship|batch-research|research-only)
+      printf "%s" "$raw"
+      ;;
+    impl|implement|implementation) printf "implement-only" ;;
+    review|review-pass) printf "review-only" ;;
+    fast|fastship|ship) printf "fast-ship" ;;
+    batch|multi-research|batch-impl) printf "batch-research" ;;
+    research|findings|audit) printf "research-only" ;;
+    *) return 1 ;;
+  esac
+}
+
+list_workflow_types() {
+  cat <<'EOF'
+standard
+implement-only
+review-only
+fast-ship
+batch-research
+research-only
+EOF
+}
+
+prepare_project_env() {
+  local project_key=$1
+  local config="$PROJECTS_DIR/${project_key}.json"
+
+  if [ ! -f "$config" ]; then
+    gum style --foreground 203 "Project not found: $project_key"
+    echo "Available: $(get_projects | tr '\n' ' ')"
+    return 1
+  fi
+
+  export AUTOCLAWDEV_PROJECT="$project_key"
+  export AUTOCLAWDEV_REPO="$(get_project_field "$project_key" "path")"
+  export AUTOCLAWDEV_PROGRAM="$WORKSPACE/program-${project_key}.md"
+  export AUTOCLAWDEV_EXPERIMENTS="$WORKSPACE/experiments-${project_key}.jsonl"
+  export AUTOCLAWDEV_TEST_CMD="$(get_project_field "$project_key" "test_cmd")"
+  export AUTOCLAWDEV_LINT_CMD="$(get_project_field "$project_key" "lint_cmd")"
+  export AUTOCLAWDEV_SECURITY_CMD="$(get_project_field "$project_key" "security_cmd")"
+  export AUTOCLAWDEV_SECURITY_DEPENDENCY_CMD="$(get_project_field "$project_key" "security_dependency_cmd")"
+  export AUTOCLAWDEV_PERFORMANCE_CMD="$(get_project_field "$project_key" "performance_cmd")"
+  export AUTOCLAWDEV_PROFILE_VALIDATION_JSON="$(get_project_json_field "$project_key" "profile_validation")"
+  export AUTOCLAWDEV_NAME="$(get_project_name "$project_key")"
+  export AUTOCLAWDEV_PROJECTS_DIR="$PROJECTS_DIR"
+  if [ -z "${AUTOCLAWDEV_TEAM_PROFILE:-}" ]; then
+    export AUTOCLAWDEV_TEAM_PROFILE="$(get_project_field "$project_key" "team_profile")"
+  fi
+  [ -z "${AUTOCLAWDEV_TEAM_PROFILE:-}" ] && export AUTOCLAWDEV_TEAM_PROFILE="reliability"
+  if ! AUTOCLAWDEV_TEAM_PROFILE="$(normalize_team_profile "${AUTOCLAWDEV_TEAM_PROFILE:-}")"; then
+    gum style --foreground 203 "Unknown team profile: ${AUTOCLAWDEV_TEAM_PROFILE:-}"
+    gum style --foreground 242 "Available: $(list_team_profiles | tr '\n' ' ')"
+    return 1
+  fi
+  export AUTOCLAWDEV_TEAM_PROFILE
+  if [ -z "${AUTOCLAWDEV_WORKFLOW_TYPE:-}" ]; then
+    export AUTOCLAWDEV_WORKFLOW_TYPE="$(get_project_field "$project_key" "workflow_type")"
+  fi
+  [ -z "${AUTOCLAWDEV_WORKFLOW_TYPE:-}" ] && export AUTOCLAWDEV_WORKFLOW_TYPE="standard"
+  if [ -z "${AUTOCLAWDEV_RESEARCH_MODEL:-}" ]; then
+    local _rm; _rm="$(get_project_field "$project_key" "research_model")"
+    [ -n "$_rm" ] && export AUTOCLAWDEV_RESEARCH_MODEL="$_rm"
+  fi
+  if [ -z "${AUTOCLAWDEV_PLANNING_MODEL:-}" ]; then
+    local _pm; _pm="$(get_project_field "$project_key" "planning_model")"
+    [ -n "$_pm" ] && export AUTOCLAWDEV_PLANNING_MODEL="$_pm"
+  fi
+  if [ -z "${AUTOCLAWDEV_IMPL_MODEL:-}" ]; then
+    local _im; _im="$(get_project_field "$project_key" "impl_model")"
+    [ -n "$_im" ] && export AUTOCLAWDEV_IMPL_MODEL="$_im"
+  fi
+  if [ -z "${AUTOCLAWDEV_REVIEW_MODEL:-}" ]; then
+    local _revm; _revm="$(get_project_field "$project_key" "review_model")"
+    [ -n "$_revm" ] && export AUTOCLAWDEV_REVIEW_MODEL="$_revm"
+  fi
+
+  # Speed profile
+  if [ -z "${AUTOCLAWDEV_SPEED_PROFILE:-}" ]; then
+    local _sp; _sp="$(get_project_field "$project_key" "speed_profile")"
+    [ -n "$_sp" ] && export AUTOCLAWDEV_SPEED_PROFILE="$_sp"
+  fi
+  [ -z "${AUTOCLAWDEV_SPEED_PROFILE:-}" ] && export AUTOCLAWDEV_SPEED_PROFILE="balanced"
+
+  # Max parallel cycles
+  if [ -z "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-}" ]; then
+    local _mpc; _mpc="$(get_project_field "$project_key" "max_parallel_cycles")"
+    [ -n "$_mpc" ] && export AUTOCLAWDEV_MAX_PARALLEL_CYCLES="$_mpc"
+  fi
+
+  # Batch research count
+  if [ -z "${AUTOCLAWDEV_BATCH_RESEARCH_COUNT:-}" ]; then
+    local _brc; _brc="$(get_project_field "$project_key" "batch_research_count")"
+    [ -n "$_brc" ] && export AUTOCLAWDEV_BATCH_RESEARCH_COUNT="$_brc"
+  fi
+
+  # Git config
+  if [ -z "${AUTOCLAWDEV_BASE_BRANCH:-}" ]; then
+    local _bb; _bb="$(get_project_field "$project_key" "base_branch")"
+    [ -n "$_bb" ] && export AUTOCLAWDEV_BASE_BRANCH="$_bb"
+  fi
+  if [ -z "${AUTOCLAWDEV_INTEGRATION_BRANCH:-}" ]; then
+    local _ib; _ib="$(get_project_field "$project_key" "integration_branch")"
+    [ -n "$_ib" ] && export AUTOCLAWDEV_INTEGRATION_BRANCH="$_ib"
+  fi
+
+  # Review depth: none | validation-only | penny | full
+  if [ -z "${AUTOCLAWDEV_REVIEW_DEPTH:-}" ]; then
+    local _rd; _rd="$(get_project_field "$project_key" "review_depth")"
+    [ -n "$_rd" ] && export AUTOCLAWDEV_REVIEW_DEPTH="$_rd"
+  fi
+
+  # Dev server URL (for browser snapshots)
+  if [ -z "${AUTOCLAWDEV_DEV_URL:-}" ]; then
+    local _du; _du="$(get_project_field "$project_key" "dev_url")"
+    [ -n "$_du" ] && export AUTOCLAWDEV_DEV_URL="$_du"
+  fi
+
+  # Landing repo
+  if [ -z "${AUTOCLAWDEV_LANDING_REPO:-}" ]; then
+    local _lr; _lr="$(get_project_field "$project_key" "landing_repo")"
+    [ -n "$_lr" ] && export AUTOCLAWDEV_LANDING_REPO="$_lr"
+  fi
+
+  # GitHub context refresh interval
+  if [ -z "${AUTOCLAWDEV_GH_CONTEXT_REFRESH_SECONDS:-}" ]; then
+    local _gcrs; _gcrs="$(get_project_field "$project_key" "gh_context_refresh_seconds")"
+    [ -n "$_gcrs" ] && export AUTOCLAWDEV_GH_CONTEXT_REFRESH_SECONDS="$_gcrs"
+  fi
+
+  # Codex model overrides
+  if [ -z "${AUTOCLAWDEV_CODEX_MODEL:-}" ]; then
+    local _cm; _cm="$(get_project_field "$project_key" "codex_model")"
+    [ -n "$_cm" ] && export AUTOCLAWDEV_CODEX_MODEL="$_cm"
+  fi
+  if [ -z "${AUTOCLAWDEV_CODEX_FIX_MODEL:-}" ]; then
+    local _cfm; _cfm="$(get_project_field "$project_key" "codex_fix_model")"
+    [ -n "$_cfm" ] && export AUTOCLAWDEV_CODEX_FIX_MODEL="$_cfm"
+  fi
+
+  return 0
+}
+
+run_runner_once() {
+  local project_key=$1
+  local cycles=${2:-5}
+  local run_mode=${3:-""}
+  local log_mode=${4:-truncate}
+  local project_log="$WORKSPACE/run-${project_key}.log"
+  local global_log="$WORKSPACE/run.log"
+
+  [ "$cycles" -gt $MAX_CYCLES ] 2>/dev/null && { echo "Max $MAX_CYCLES cycles."; cycles=$MAX_CYCLES; }
+  [ "$cycles" -lt 1 ] 2>/dev/null && cycles=1
+
+  prepare_project_env "$project_key" || return 1
+  mkdir -p "$WORKSPACE"
+
+  if [ "$log_mode" = "append" ]; then
+    "$RUNNER" "$cycles" "$run_mode" "$project_key" \
+      > >(tee -a "$project_log" "$global_log") 2>&1
+    return $?
+  fi
+
+  "$RUNNER" "$cycles" "$run_mode" "$project_key" \
+    > >(tee "$project_log" "$global_log") 2>&1
+}
+
+stream_experiments() {
+  local expfile=$1
+  python3 - "$expfile" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+
+def repair_line(line: str) -> str | None:
+    description_marker = '"description":"'
+    result_marker = '","result":"'
+    description_index = line.find(description_marker)
+    if description_index < 0:
+        return None
+
+    description_start = description_index + len(description_marker)
+    result_index = line.find(result_marker, description_start)
+    if result_index < 0:
+        return None
+
+    raw_description = line[description_start:result_index]
+    repaired_description = json.dumps(raw_description)[1:-1]
+    return f"{line[:description_start]}{repaired_description}{line[result_index:]}"
+
+def parse_line(line: str):
+    for candidate in (line, repair_line(line)):
+        if not candidate:
+            continue
+        try:
+            return json.loads(candidate)
+        except Exception:
+            pass
+    return None
+
+with open(path, encoding="utf-8", errors="replace") as handle:
+    for raw in handle:
+        raw = raw.strip()
+        if not raw:
+            continue
+        parsed = parse_line(raw)
+        if parsed is None:
+            continue
+        print(json.dumps(parsed))
+PY
+}
+
+print_doctor_line() {
+  local status=$1
+  local label=$2
+  local detail=$3
+  local icon="•"
+  local color="242"
+  case "$status" in
+    ok) icon="✓"; color="114" ;;
+    warn) icon="!"; color="221" ;;
+    fail) icon="✗"; color="203" ;;
+  esac
+  printf "  %s %-18s %s\n" "$(gum style --foreground "$color" "$icon")" "$label" "$detail"
+}
+
+doctor_check_command() {
+  local required=$1
+  local command_name=$2
+  local label=$3
+
+  if command -v "$command_name" >/dev/null 2>&1; then
+    print_doctor_line "ok" "$label" "$(command -v "$command_name")"
+    return 0
+  fi
+
+  if [ "$required" = "required" ]; then
+    print_doctor_line "fail" "$label" "missing"
+    return 1
+  fi
+
+  print_doctor_line "warn" "$label" "missing"
+  return 0
+}
+
+doctor_check_dir() {
+  local required=$1
+  local path=$2
+  local label=$3
+
+  if [ -d "$path" ]; then
+    print_doctor_line "ok" "$label" "$path"
+    return 0
+  fi
+
+  if [ "$required" = "required" ]; then
+    print_doctor_line "fail" "$label" "missing: $path"
+    return 1
+  fi
+
+  print_doctor_line "warn" "$label" "missing: $path"
+  return 0
+}
+
+doctor_check_link() {
+  local link_path=$1
+  local expected_target=$2
+  local label=$3
+
+  if [ -L "$link_path" ] && [ "$(readlink "$link_path")" = "$expected_target" ]; then
+    print_doctor_line "ok" "$label" "$link_path -> $expected_target"
+    return 0
+  fi
+
+  if [ -e "$link_path" ]; then
+    print_doctor_line "warn" "$label" "not repo-managed: $link_path"
+    return 0
+  fi
+
+  print_doctor_line "warn" "$label" "missing: $link_path"
+  return 0
+}
+
+get_exp_stats() {
+  local key=$1
+  local expfile="$WORKSPACE/experiments-${key}.jsonl"
+  if [ -f "$expfile" ] && [ -s "$expfile" ]; then
+    local stats
+    stats=$(stream_experiments "$expfile" | python3 -c "
+import json, sys
+total = 0
+passed = 0
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    exp = json.loads(line)
+    total += 1
+    if exp.get('result') == 'pass':
+        passed += 1
+failed = total - passed
+rate = int((passed * 100 / total) if total else 0)
+print(f'{total} {passed} {failed} {rate}')
+" 2>/dev/null)
+    echo "${stats:-0 0 0 0}"
+  else
+    echo "0 0 0 0"
+  fi
+}
+
+is_running() {
+  local lockfile="$WORKSPACE/.lock-${1}"
+  if [ -f "$lockfile" ]; then
+    local pid=$(cat "$lockfile" 2>/dev/null)
+    kill -0 "$pid" 2>/dev/null && echo "yes" || echo "no"
+  else
+    echo "no"
+  fi
+}
+
+# ── Dashboard View ───────────────────────────────────────────────────
+cmd_dashboard() {
+  clear
+  header
+
+  local projects=($(get_projects))
+  local lines=()
+
+  for key in "${projects[@]}"; do
+    local name=$(get_project_name "$key")
+    local desc=$(get_project_field "$key" "description")
+    read total passed failed rate <<< $(get_exp_stats "$key")
+    local running=$(is_running "$key")
+    local status_icon="○"
+    [ "$running" = "yes" ] && status_icon="$(gum style --foreground 114 '●')"
+
+    local bar=""
+    if [ "$total" -gt 0 ]; then
+      local filled=$((rate / 5))
+      local empty=$((20 - filled))
+      bar="$(printf '█%.0s' $(seq 1 $filled 2>/dev/null) 2>/dev/null)$(printf '░%.0s' $(seq 1 $empty 2>/dev/null) 2>/dev/null)"
+    else
+      bar="░░░░░░░░░░░░░░░░░░░░"
+    fi
+
+    lines+=("$(printf "%s %-18s %-30s %3d exp  ✓%-3d ✗%-3d %3d%% %s" \
+      "$status_icon" "$name" "${desc:0:30}" "$total" "$passed" "$failed" "$rate" "$bar")")
+  done
+
+  echo ""
+  gum style --foreground 242 --bold "  PROJECTS"
+  echo ""
+
+  for line in "${lines[@]}"; do
+    echo "  $line"
+  done
+
+  echo ""
+
+  # Recent experiments
+  local all_exps=""
+  for key in "${projects[@]}"; do
+    local expfile="$WORKSPACE/experiments-${key}.jsonl"
+    [ -f "$expfile" ] && all_exps="$all_exps$(stream_experiments "$expfile" | tail -3 | while read l; do echo "$key|$l"; done)
+"
+  done
+
+  if [ -n "$all_exps" ]; then
+    gum style --foreground 242 --bold "  RECENT EXPERIMENTS"
+    echo ""
+    echo "$all_exps" | sort -t'|' -k2 -r | head -8 | while IFS='|' read key data; do
+      local result=$(echo "$data" | python3 -c "import json,sys;print(json.loads(sys.stdin.read().strip()).get('result','?'))" 2>/dev/null)
+      local desc=$(echo "$data" | python3 -c "import json,sys;print(json.loads(sys.stdin.read().strip()).get('description','?')[:50])" 2>/dev/null)
+      local ts=$(echo "$data" | python3 -c "import json,sys;print(json.loads(sys.stdin.read().strip()).get('timestamp','?')[:16])" 2>/dev/null)
+      local icon="$(gum style --foreground 203 '✗')"
+      [ "$result" = "pass" ] && icon="$(gum style --foreground 114 '✓')"
+      printf "  %s  %-12s %-16s %s\n" "$icon" "$key" "$ts" "$desc"
+    done
+  fi
+
+  echo ""
+  gum style --foreground 238 "  Press any key to continue..."
+  read -rsn1
+}
+
+# ── Interactive Main Menu ────────────────────────────────────────────
+cmd_interactive() {
+  while true; do
+    clear
+    header
+
+    local choice=$(gum choose --height 14 \
+      "▶️   Run Cycles" \
+      "🔍  Deep Review" \
+      "🔄  Loop (Continuous)" \
+      "📁  Projects" \
+      "🔬  Experiments" \
+      "📋  Live Console" \
+      "🌐  Web Dashboard" \
+      "🔗  GitHub Issues" \
+      "⚙️   Settings" \
+      "❓  Help" \
+      "🚪  Exit")
+
+    case "$choice" in
+      "▶️   Run Cycles")       cmd_run_interactive ;;
+      "🔍  Deep Review")       cmd_review_interactive ;;
+      "🔄  Loop (Continuous)") cmd_loop_interactive ;;
+      "📁  Projects")          cmd_projects_interactive ;;
+      "🔬  Experiments")       cmd_experiments_interactive ;;
+      "📋  Live Console")      cmd_live ;;
+      "🌐  Web Dashboard")     "$UI_LAUNCHER" ;;
+      "🔗  GitHub Issues")     cmd_github_interactive ;;
+      "⚙️   Settings")          cmd_settings ;;
+      "❓  Help")               cmd_help; read -rsn1 ;;
+      "🚪  Exit"|"")           clear; exit 0 ;;
+    esac
+  done
+}
+
+# ── Deep Review (Interactive) ────────────────────────────────────────
+cmd_review_interactive() {
+  clear
+  header
+  gum style --foreground 242 --bold "  DEEP REVIEW"
+  echo ""
+
+  local projects=($(get_projects))
+  local choices=()
+  for key in "${projects[@]}"; do
+    local name=$(get_project_name "$key")
+    choices+=("$key — $name")
+  done
+  local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
+  [ -z "$selected" ] && return
+  local project_key=$(echo "$selected" | cut -d' ' -f1)
+
+  local provider=$(gum choose --header "Provider:" "claude (Opus max)" "codex (GPT-5.4)" "codex-fast (GPT-5.4 fast)")
+  local flag=""
+  case "$provider" in
+    *codex-fast*) flag="--codex-fast" ;;
+    *codex*)      flag="--codex" ;;
+    *)            flag="--claude" ;;
+  esac
+
+  echo ""
+  gum style --foreground 114 "Starting deep review for $project_key ($flag)..."
+  "$REPO_ROOT/scripts/deep-review.sh" "$project_key" "$flag"
+}
+
+# ── Loop (Interactive) ───────────────────────────────────────────────
+cmd_loop_interactive() {
+  clear
+  header
+  gum style --foreground 242 --bold "  CONTINUOUS LOOP"
+  echo ""
+
+  local projects=($(get_projects))
+  local choices=()
+  for key in "${projects[@]}"; do
+    local name=$(get_project_name "$key")
+    choices+=("$key — $name")
+  done
+  local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
+  [ -z "$selected" ] && return
+  local project_key=$(echo "$selected" | cut -d' ' -f1)
+
+  local loop_type=$(gum choose --header "Loop type:" \
+    "Full cycles (all 5 profiles per pass)" \
+    "Single profile continuous")
+
+  if [ "$loop_type" = "Single profile continuous" ]; then
+    local profile=$(gum choose --header "Profile:" "reliability" "security" "performance" "quality" "issues")
+    local cycles=$(gum choose --header "Max cycles:" "10" "25" "50")
+    echo ""
+    gum style --foreground 114 "Starting loop: $project_key / $profile / $cycles cycles..."
+    cmd_profile_wigman "$profile" "$project_key" "$cycles" "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}"
+  else
+    local passes=$(gum choose --header "Full passes:" "3" "5" "10" "25")
+    echo ""
+    gum style --foreground 114 "Starting loop: $project_key / $passes full cycles (${passes}×5 = $((passes * 5)) total runs)..."
+    cmd_full_cycle "$project_key" "$passes"
+  fi
+}
+
+# ── Run Cycles (Interactive) ─────────────────────────────────────────
+run_project_interactive() {
+  local project_key=$1
+
+  # Check if already running
+  if [ "$(is_running "$project_key")" = "yes" ]; then
+    gum style --foreground 203 "  Already running! Stop first or wait."
+    sleep 2
+    return
+  fi
+
+  local name=$(get_project_name "$project_key")
+
+  local run_type=$(gum choose --header "Run type for $name:" \
+    "Full cycle (all 5 profiles)" \
+    "Single profile only")
+
+  if [ "$run_type" = "Single profile only" ]; then
+    local profile=$(gum choose --header "Profile:" "reliability" "security" "performance" "quality" "issues")
+    local cycles=$(gum choose --header "Cycles:" "1" "3" "5" "10")
+    if gum confirm "Run $cycles cycles of $profile on $name?"; then
+      echo ""
+      gum style --foreground 114 "  Starting $cycles × $profile on $name..."
+      cmd_profile_run "$profile" "$project_key" "$cycles"
+    fi
+  else
+    local passes=$(gum choose --header "Full passes:" "1" "2" "3" "5")
+    if gum confirm "Run $passes full cycle(s) on $name? (${passes}×5 profiles = $((passes * 5)) total runs)"; then
+      echo ""
+      gum style --foreground 114 "  Starting $passes full cycle(s) on $name..."
+      cmd_full_cycle "$project_key" "$passes"
+    fi
+  fi
+}
+
+cmd_run_interactive() {
+  clear
+  header
+
+  gum style --foreground 242 --bold "  SELECT PROJECT"
+  echo ""
+
+  local projects=($(get_projects))
+  local choices=()
+  for key in "${projects[@]}"; do
+    local name=$(get_project_name "$key")
+    local running=$(is_running "$key")
+    local status=""
+    [ "$running" = "yes" ] && status=" (RUNNING)"
+    choices+=("$key — $name$status")
+  done
+
+  local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
+  [ -z "$selected" ] && return
+
+  local project_key=$(echo "$selected" | cut -d' ' -f1)
+  run_project_interactive "$project_key"
+}
+
+# ── Projects Browser ─────────────────────────────────────────────────
+cmd_projects_interactive() {
+  while true; do
+    clear
+    header
+    gum style --foreground 242 --bold "  PROJECTS"
+    echo ""
+
+    local projects=($(get_projects))
+    local choices=()
+    for key in "${projects[@]}"; do
+      local name=$(get_project_name "$key")
+      read total passed failed rate <<< $(get_exp_stats "$key")
+      choices+=("$(printf '%-15s %-18s %3d exp  %3d%% pass' "$key" "$name" "$total" "$rate")")
+    done
+    choices+=("← Back")
+
+    local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
+    [ -z "$selected" ] || [ "$selected" = "← Back" ] && return
+
+    local project_key=$(echo "$selected" | awk '{print $1}')
+    cmd_project_detail "$project_key"
+  done
+}
+
+# ── Project Detail ───────────────────────────────────────────────────
+cmd_project_detail() {
+  local key=$1
+  clear
+  header
+
+  local name=$(get_project_name "$key")
+  local desc=$(get_project_field "$key" "description")
+  local path=$(get_project_field "$key" "path")
+  local pm=$(get_project_field "$key" "package_manager")
+  local test_cmd=$(get_project_field "$key" "test_cmd")
+  local lint_cmd=$(get_project_field "$key" "lint_cmd")
+  local gh_repo=$(get_project_field "$key" "gh_repo")
+  read total passed failed rate <<< $(get_exp_stats "$key")
+  local running=$(is_running "$key")
+
+  gum style --border rounded --border-foreground 215 --padding "0 2" \
+    "$(gum style --foreground 117 --bold "$name")" \
+    "$(gum style --foreground 242 "$desc")" \
+    "" \
+    "$(gum style --foreground 238 "Key:     ")$(gum style --foreground 215 "$key")" \
+    "$(gum style --foreground 238 "Path:    ")$(gum style --foreground 242 "$path")" \
+    "$(gum style --foreground 238 "PM:      ")$pm" \
+    "$(gum style --foreground 238 "Test:    ")${test_cmd:-none}" \
+    "$(gum style --foreground 238 "Lint:    ")${lint_cmd:-none}" \
+    "$(gum style --foreground 238 "GitHub:  ")${gh_repo:-not connected}" \
+    "$(gum style --foreground 238 "Status:  ")$([ "$running" = "yes" ] && gum style --foreground 114 "● Running" || gum style --foreground 242 "○ Idle")" \
+    "" \
+    "$(gum style --foreground 238 "Experiments: ")$(gum style --bold "$total")  $(gum style --foreground 114 "✓$passed")  $(gum style --foreground 203 "✗$failed")  $(gum style --bold "${rate}%")"
+
+  echo ""
+
+  # Show recent experiments
+  local expfile="$WORKSPACE/experiments-${key}.jsonl"
+  if [ -f "$expfile" ] && [ -s "$expfile" ]; then
+    gum style --foreground 242 --bold "  RECENT EXPERIMENTS"
+    echo ""
+    stream_experiments "$expfile" | tail -8 | tac | python3 -c "
+import json, sys
+for line in sys.stdin:
+    exp = json.loads(line)
+    result = exp.get('result', '?')
+    icon = '\033[38;5;114m✓\033[0m' if result == 'pass' else '\033[38;5;203m✗\033[0m'
+    elapsed = exp.get('elapsed', 0)
+    elapsed_str = f'{elapsed//60}m' if elapsed > 60 else f'{elapsed}s'
+    commit = (exp.get('commit') or '')[:7]
+    desc = (exp.get('description') or '?')[:55]
+    print(f'  {icon}  {exp.get(\"id\", \"?\"):8} {elapsed_str:6} {commit:7} {desc}')
+" 2>/dev/null
+  fi
+
+  echo ""
+
+  local action=$(gum choose --height 11 \
+    "▶️  Run cycles" \
+    "🔍 Deep review" \
+    "🔄 Continuous loop" \
+    "🧠 View memory" \
+    "🧬 View latest cycle" \
+    "📋 View full log" \
+    "🔗 GitHub issues" \
+    "📂 Open in editor" \
+    "🔧 Edit config" \
+    "← Back")
+
+  case "$action" in
+    "▶️  Run cycles") run_project_interactive "$key" ;;
+    "🔍 Deep review") "$REPO_ROOT/scripts/deep-review.sh" "$key" ;;
+    "🔄 Continuous loop") cmd_wigman "$key" 25 "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}" ;;
+    "🧠 View memory")
+      local mem_dir="$WORKSPACE/memory/$key"
+      if [ -f "$mem_dir/project-memory.json" ]; then
+        python3 -c "import json; d=json.load(open('$mem_dir/project-memory.json')); print(d.get('summary','No summary'))" 2>/dev/null
+        echo ""
+        local findings=$(wc -l < "$mem_dir/finding-memory.jsonl" 2>/dev/null || echo "0")
+        local files=$(wc -l < "$mem_dir/file-memory.jsonl" 2>/dev/null || echo "0")
+        printf "  Findings: %s  |  File memories: %s\n" "$findings" "$files"
+      else
+        echo "  No memory yet. Run: autoclaw memory $key"
+      fi
+      echo ""; read -rsn1 -p "  Press any key..." ;;
+    "🧬 View latest cycle") cmd_cycle "$key" ;;
+    "📋 View full log") cmd_log "$key"; read -rsn1 ;;
+    "🔗 GitHub issues") cmd_github "$key"; read -rsn1 ;;
+    "📂 Open in editor") code "$path" 2>/dev/null || open "$path" ;;
+    "🔧 Edit config") ${EDITOR:-nano} "$PROJECTS_DIR/${key}.json" ;;
+    "← Back"|"") return ;;
+  esac
+}
+
+cmd_cycle() {
+  local key=${1:-""}
+  local cycle_id=${2:-""}
+  [ -z "$key" ] && key=$(get_projects | gum choose --header "Select project:")
+  [ -z "$key" ] && return
+
+  local cycle_file=""
+  if [ -n "$cycle_id" ]; then
+    [[ "$cycle_id" =~ ^[0-9]+$ ]] && cycle_id=$(printf "exp-%03d" "$cycle_id")
+    cycle_file="$WORKSPACE/cycles/${key}-${cycle_id}.json"
+  else
+    cycle_file=$(ls -t "$WORKSPACE"/cycles/"${key}"-exp-*.json 2>/dev/null | head -1)
+  fi
+
+  if [ -z "$cycle_file" ] || [ ! -f "$cycle_file" ]; then
+    gum style --foreground 242 "  No cycle details found for $key."
+    echo ""
+    gum style --foreground 238 "  Press any key..."
+    read -rsn1
+    return
+  fi
+
+  python3 -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    data = json.load(f)
+print()
+print(f\"  Cycle:   {data.get('id','?')}\")
+print(f\"  Project: {data.get('project','?')}\")
+print(f\"  Result:  {data.get('result','running')}\")
+print(f\"  Started: {data.get('startedAt','?')}\")
+if data.get('finishedAt'):
+    print(f\"  Ended:   {data.get('finishedAt')}\")
+print()
+for idx, phase in enumerate(data.get('phases', []), start=1):
+    status = phase.get('status', '?')
+    icon = '✓' if status == 'ok' else '✗' if status == 'fail' else '⟳'
+    print(f\"  {idx:02d}. {icon} {phase.get('name','?')} [{phase.get('tool','?')}] {phase.get('elapsed',0)}s\")
+    output = (phase.get('output') or '').strip()
+    if output:
+        for line in output.splitlines():
+            print(f\"      {line}\")
+    else:
+        print(\"      —\")
+    print()
+" "$cycle_file" | less -R
+}
+
+# ── Experiments Browser ──────────────────────────────────────────────
+cmd_experiments_interactive() {
+  clear
+  header
+  gum style --foreground 242 --bold "  ALL EXPERIMENTS"
+  echo ""
+
+  # Merge all experiment logs
+  local all=""
+  for key in $(get_projects); do
+    local expfile="$WORKSPACE/experiments-${key}.jsonl"
+    [ -f "$expfile" ] && while read line; do
+      [ -n "$line" ] && all="$all$key|$line
+"
+    done < <(stream_experiments "$expfile")
+  done
+
+  if [ -z "$all" ]; then
+    gum style --foreground 242 "  No experiments yet. Run a cycle to get started."
+    echo ""
+    gum style --foreground 238 "  Press any key..."
+    read -rsn1
+    return
+  fi
+
+  echo "$all" | python3 -c "
+import json, sys
+lines = []
+for raw in sys.stdin:
+    raw = raw.strip()
+    if not raw or '|' not in raw: continue
+    key, data = raw.split('|', 1)
+    try:
+        e = json.loads(data)
+        lines.append((e.get('timestamp',''), key, e))
+    except: pass
+lines.sort(key=lambda x: x[0], reverse=True)
+for ts, key, e in lines[:20]:
+    icon = '✓' if e.get('result') == 'pass' else '✗'
+    color = '\033[38;5;114m' if e.get('result') == 'pass' else '\033[38;5;203m'
+    rst = '\033[0m'
+    elapsed = e.get('elapsed', 0)
+    em = f'{elapsed//60}m {elapsed%60}s' if elapsed > 60 else f'{elapsed}s'
+    commit = e.get('commit', '')[:7]
+    domain = e.get('domain', '')
+    desc = (e.get('description') or '?')[:45]
+    print(f'  {color}{icon}{rst} {e.get(\"id\",\"?\"):8} {key:15} {ts[:16]:16} {em:>6}  {commit:7}  {domain:8}  {desc}')
+" 2>/dev/null
+
+  echo ""
+  gum style --foreground 238 "  Press any key..."
+  read -rsn1
+}
+
+# ── Live Console ─────────────────────────────────────────────────────
+cmd_live() {
+  clear
+  header
+
+  # Find active runs
+  local active=()
+  for key in $(get_projects); do
+    [ "$(is_running "$key")" = "yes" ] && active+=("$key")
+  done
+
+  if [ ${#active[@]} -eq 0 ]; then
+    gum style --foreground 242 "  No active runs."
+    echo ""
+
+    # Offer to view last log
+    local choice=$(gum choose "View last run log" "← Back")
+    if [ "$choice" = "View last run log" ]; then
+      local logfile=$(ls -t "$WORKSPACE"/run-*.log "$WORKSPACE"/run.log 2>/dev/null | head -1)
+      [ -n "$logfile" ] && less -R "$logfile"
+    fi
+    return
+  fi
+
+  local key="${active[0]}"
+  if [ ${#active[@]} -gt 1 ]; then
+    key=$(printf '%s\n' "${active[@]}" | gum choose --header "Select active run:")
+  fi
+
+  gum style --foreground 114 "  Opening structured live view for $key... (Ctrl+C to stop)"
+  echo ""
+
+  local logfile="$WORKSPACE/run-${key}.log"
+  [ ! -f "$logfile" ] && logfile="$WORKSPACE/run.log"
+  local lockfile="$WORKSPACE/.lock-${key}"
+
+  python3 - "$logfile" "$key" "$lockfile" "$PROJECTS_DIR/${key}.json" <<'PY'
+import json
+import os
+import re
+import shutil
+import signal
+import sys
+import textwrap
+import time
+from collections import OrderedDict, deque
+
+logfile, project_key, lockfile, config_path = sys.argv[1:5]
+ansi_re = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+PHASES = [
+    ("Olivia", "Research"),
+    ("Jessica", "Planning"),
+    ("Terry", "Backend"),
+    ("Jerry", "Frontend"),
+    ("Review", "Code Review"),
+    ("Fix", "Fixes"),
+    ("Penny", "Deep Review"),
+    ("Visual", "Visual Review"),
+    ("Tests", "Tests"),
+    ("Lint", "Lint"),
+    ("Commit", "Commit"),
+]
+
+
+def strip_ansi(text: str) -> str:
+    return ansi_re.sub("", text).rstrip("\n")
+
+
+def load_project_name() -> str:
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f).get("name") or project_key
+    except Exception:
+        return project_key
+
+
+def is_running() -> bool:
+    try:
+        with open(lockfile, "r", encoding="utf-8") as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
+def parse_line(line: str) -> dict:
+    event = {"kind": "line", "text": line, "agent": "", "session": "", "tool": "", "status": ""}
+    trimmed = line.strip()
+
+    match = re.search(r"──\s+(.+)\s+session\s+──$", trimmed)
+    if match:
+        session = match.group(1)
+        event.update(kind="session_start", session=session, agent=session.split("/", 1)[0])
+        return event
+
+    match = re.match(r"^──\s+end\s+(.+)\s+──$", trimmed)
+    if match:
+        session = match.group(1)
+        event.update(kind="session_end", session=session, agent=session.split("/", 1)[0])
+        return event
+
+    match = re.match(r"^│\s+([^:]+):\s?(.*)$", trimmed)
+    if match:
+        session = match.group(1)
+        event.update(
+            kind="session_line",
+            session=session,
+            agent=session.split("/", 1)[0],
+            text=match.group(2) or "",
+        )
+        return event
+
+    match = re.match(r"^([^\s]+)\s+([A-Za-z]+)\s+\[([^\]]+)\]\s+(.*)$", trimmed)
+    if match:
+        event.update(
+            kind="phase_start",
+            agent=match.group(2),
+            tool=match.group(3),
+            text=match.group(4),
+            status="working",
+        )
+        return event
+
+    match = re.match(r"^[✓✗]\s+(Done|Fail)\s+([^:]+):\s*(.*)$", trimmed)
+    if match:
+        event.update(
+            kind="phase_done",
+            agent=match.group(2),
+            text=match.group(3),
+            status="done" if match.group(1) == "Done" else "fail",
+        )
+        return event
+
+    if trimmed.startswith("Target:") or trimmed.startswith("Criteria:") or trimmed.startswith("Max rounds"):
+        event["kind"] = "phase_detail"
+        return event
+
+    if "CYCLE " in trimmed:
+        event["kind"] = "cycle"
+        return event
+
+    return event
+
+
+def resolve_phase(event: dict) -> str | None:
+    agent = (event.get("agent") or "").lower()
+    session = (event.get("session") or "").lower()
+    text = (event.get("text") or "").lower()
+
+    if "visual" in session or agent == "visual":
+        return "Visual"
+    if agent == "olivia":
+        return "Olivia"
+    if agent == "jessica":
+        return "Jessica"
+    if agent == "terry":
+        return "Terry"
+    if agent == "jerry":
+        return "Jerry"
+    if agent in {"review", "coderabbit"} or "coderabbit" in session:
+        return "Review"
+    if agent == "fix" or "fix/sonnet" in session:
+        return "Fix"
+    if agent == "penny":
+        return "Penny"
+    if agent == "tests" or "running suite" in text or "re-running (fix" in text:
+        return "Tests"
+    if agent == "lint":
+        return "Lint"
+    if agent in {"commit", "revert"}:
+        return "Commit"
+    return None
+
+
+def format_line(event: dict) -> str:
+    kind = event.get("kind")
+    if kind == "session_start":
+        return f"── {event.get('session')} session ──"
+    if kind == "session_end":
+        return f"── end {event.get('session')} ──"
+    if kind == "session_line":
+        return f"│ {event.get('session')}: {event.get('text', '')}"
+    if kind == "phase_start":
+        return f"{event.get('agent')} [{event.get('tool')}] {event.get('text', '')}"
+    if kind == "phase_done":
+        prefix = "✓ Done" if event.get("status") == "done" else "✗ Fail"
+        return f"{prefix} {event.get('agent')}: {event.get('text', '')}"
+    return event.get("text", "")
+
+
+project_name = load_project_name()
+recent_lines = deque(maxlen=18)
+phase_status = {name: "idle" for name, _ in PHASES}
+phase_output = {name: deque(maxlen=12) for name, _ in PHASES}
+session_order = 0
+sessions: "OrderedDict[str, dict]" = OrderedDict()
+current_phase = None
+last_render = 0.0
+file_pos = 0
+
+
+def add_session_line(session_name: str, text: str) -> None:
+    global session_order
+    if session_name not in sessions:
+        session_order += 1
+        sessions[session_name] = {
+            "active": False,
+            "lines": deque(maxlen=8),
+            "order": session_order,
+        }
+    sessions[session_name]["lines"].append(text)
+
+
+def handle_event(raw_line: str) -> None:
+    global current_phase
+    event = parse_line(raw_line)
+    text = format_line(event)
+    if text:
+        recent_lines.append(text)
+
+    phase_name = resolve_phase(event)
+    if event.get("kind") == "phase_start" and phase_name:
+        phase_status[phase_name] = "working"
+        current_phase = phase_name
+    elif event.get("kind") == "phase_done" and phase_name:
+        phase_status[phase_name] = event.get("status") or "done"
+        current_phase = None
+    elif event.get("kind") == "cycle":
+        current_phase = None
+
+    if phase_name and text:
+        phase_output[phase_name].append(text)
+    elif current_phase and text:
+        phase_output[current_phase].append(text)
+
+    if event.get("kind") == "session_start":
+        add_session_line(event["session"], text)
+        sessions[event["session"]]["active"] = True
+    elif event.get("kind") == "session_end":
+        add_session_line(event["session"], text)
+        sessions[event["session"]]["active"] = False
+    elif event.get("kind") == "session_line":
+        add_session_line(event["session"], text)
+
+
+def phase_badges(width: int) -> list[str]:
+    badges = []
+    icons = {"idle": "·", "working": "●", "done": "✓", "fail": "✗"}
+    for name, _role in PHASES:
+        status = phase_status.get(name, "idle")
+        badges.append(f"[{icons.get(status, '·')} {name}]")
+
+    lines: list[str] = []
+    current = ""
+    for badge in badges:
+        next_line = f"{current} {badge}".strip()
+        if current and len(next_line) > width:
+            lines.append(current)
+            current = badge
+        else:
+            current = next_line
+    if current:
+        lines.append(current)
+    return lines[:3]
+
+
+def session_blocks(width: int, max_blocks: int) -> list[str]:
+    ordered = sorted(
+        sessions.items(),
+        key=lambda item: (
+            0 if item[1]["active"] else 1,
+            -item[1]["order"],
+        ),
+    )
+    lines: list[str] = []
+    for session_name, info in ordered[:max_blocks]:
+        marker = "ACTIVE" if info["active"] else "DONE"
+        lines.append(f"{session_name} [{marker}]")
+        for entry in list(info["lines"])[-6:]:
+            wrapped = textwrap.wrap(entry, width=max(20, width - 2)) or [entry]
+            lines.extend(f"  {part}" for part in wrapped[:2])
+        lines.append("")
+    return lines or ["No agent sessions yet."]
+
+
+def recent_event_lines(width: int, rows: int) -> list[str]:
+    rendered: list[str] = []
+    for entry in list(recent_lines)[-rows:]:
+        rendered.extend(textwrap.wrap(entry, width=max(20, width)) or [entry])
+    return rendered[-rows:] if rendered else ["Waiting for output..."]
+
+
+def render() -> None:
+    width, height = shutil.get_terminal_size((120, 36))
+    status = "RUNNING" if is_running() else "IDLE"
+    phase_lines = phase_badges(width - 4)
+    session_lines = session_blocks(width - 4, max_blocks=3)
+    remaining = max(6, height - (12 + len(phase_lines) + len(session_lines)))
+    recent_lines_rendered = recent_event_lines(width - 4, remaining)
+
+    sys.stdout.write("\x1b[2J\x1b[H")
+    sys.stdout.write(f"AutoClawDev Live Console\n")
+    sys.stdout.write(f"Project: {project_name} ({project_key})\n")
+    sys.stdout.write(f"Status:  {status}  Log: {os.path.basename(logfile)}  Ctrl+C to exit\n")
+    sys.stdout.write("\n")
+    sys.stdout.write("Phases\n")
+    for line in phase_lines:
+        sys.stdout.write(f"  {line}\n")
+    sys.stdout.write("\n")
+    sys.stdout.write("Agent Sessions\n")
+    for line in session_lines:
+        sys.stdout.write(f"  {line}\n" if line else "\n")
+    sys.stdout.write("Recent Events\n")
+    for line in recent_lines_rendered:
+        sys.stdout.write(f"  {line}\n")
+    sys.stdout.flush()
+
+
+def read_new_lines() -> None:
+    global file_pos
+    if not os.path.exists(logfile):
+        return
+    size = os.path.getsize(logfile)
+    if size < file_pos:
+        file_pos = 0
+    with open(logfile, "r", encoding="utf-8", errors="replace") as f:
+        f.seek(file_pos)
+        chunk = f.read()
+        file_pos = f.tell()
+    if not chunk:
+        return
+    for raw in chunk.splitlines():
+        line = strip_ansi(raw)
+        if line.strip():
+            handle_event(line)
+
+
+def handle_exit(_signum, _frame):
+    sys.stdout.write("\x1b[0m\n")
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, handle_exit)
+signal.signal(signal.SIGTERM, handle_exit)
+
+render()
+idle_ticks = 0
+while True:
+    read_new_lines()
+    now = time.time()
+    if now - last_render > 0.25:
+        render()
+        last_render = now
+
+    if is_running():
+        idle_ticks = 0
+    else:
+        idle_ticks += 1
+        if idle_ticks > 20:
+            render()
+    time.sleep(0.25)
+PY
+}
+
+# ── Tail a specific project log ──────────────────────────────────────
+cmd_tail() {
+  local key=${1:-""}
+  if [ -z "$key" ]; then
+    key=$(get_projects | gum choose --header "Select project:")
+  fi
+  [ -z "$key" ] && return
+
+  local logfile="$WORKSPACE/run-${key}.log"
+  [ ! -f "$logfile" ] && logfile="$WORKSPACE/run.log"
+
+  gum style --foreground 114 "  Tailing $key..."
+  tail -f "$logfile" 2>/dev/null
+}
+
+# ── GitHub Issues ────────────────────────────────────────────────────
+cmd_github_interactive() {
+  clear
+  header
+
+  # Pick project with gh_repo
+  local choices=()
+  for key in $(get_projects); do
+    local gh=$(get_project_field "$key" "gh_repo")
+    [ -n "$gh" ] && choices+=("$key — $gh")
+  done
+
+  if [ ${#choices[@]} -eq 0 ]; then
+    gum style --foreground 242 "  No projects connected to GitHub."
+    sleep 2
+    return
+  fi
+
+  choices+=("← Back")
+  local selected=$(printf '%s\n' "${choices[@]}" | gum choose --header "Select project:")
+  [ -z "$selected" ] || [ "$selected" = "← Back" ] && return
+
+  local key=$(echo "$selected" | cut -d' ' -f1)
+  cmd_github "$key"
+  read -rsn1
+}
+
+cmd_github() {
+  local key=$1
+  local gh_repo=$(get_project_field "$key" "gh_repo")
+  local gh_upstream=$(get_project_field "$key" "gh_upstream")
+
+  if [ -z "$gh_repo" ]; then
+    gum style --foreground 242 "  No GitHub repo configured for $key"
+    return
+  fi
+
+  echo ""
+  gum style --foreground 242 --bold "  GITHUB ISSUES — $gh_repo"
+  echo ""
+
+  gum spin --spinner dot --title "Fetching issues..." -- sleep 0.5
+  gh issue list --repo "$gh_repo" --state open --json number,title,labels --limit 15 --jq '.[] | "  #\(.number)\t\(.title)\t[\(.labels | map(.name) | join(","))]"' 2>/dev/null | while IFS=$'\t' read num title labels; do
+    printf "  $(gum style --foreground 117 "$num")  %-50s $(gum style --foreground 238 "$labels")\n" "${title:0:50}"
+  done
+
+  if [ -n "$gh_upstream" ]; then
+    echo ""
+    gum style --foreground 242 --bold "  UPSTREAM — $gh_upstream"
+    echo ""
+    gh issue list --repo "$gh_upstream" --state open --label "bug,enhancement" --json number,title --limit 10 --jq '.[] | "  #\(.number)\t\(.title)"' 2>/dev/null | while IFS=$'\t' read num title; do
+      printf "  $(gum style --foreground 221 "$num")  %s\n" "${title:0:55}"
+    done
+  fi
+  echo ""
+}
+
+# ── Settings ─────────────────────────────────────────────────────────
+cmd_settings() {
+  clear
+  header
+  gum style --foreground 242 --bold "  SETTINGS"
+  echo ""
+
+  # Nightly status
+  local nightly="inactive"
+  launchctl list 2>/dev/null | grep -q "com.autoresearch.nightly" && nightly="active"
+
+  gum style --border rounded --border-foreground 238 --padding "0 2" \
+    "$(gum style --foreground 238 "Nightly:     ")$([ "$nightly" = "active" ] && gum style --foreground 114 "● Active (2am, 10 cycles)" || gum style --foreground 203 "● Inactive")" \
+    "$(gum style --foreground 238 "Max Cycles:  ")$MAX_CYCLES" \
+    "$(gum style --foreground 238 "Runner:      ")$RUNNER" \
+    "$(gum style --foreground 238 "Projects:    ")$PROJECTS_DIR" \
+    "$(gum style --foreground 238 "Experiments: ")$WORKSPACE" \
+    "$(gum style --foreground 238 "Dashboard:   ")http://localhost:4100"
+
+  echo ""
+
+  local action=$(gum choose --height 8 \
+    "📁 Open projects folder" \
+    "📝 Edit runner script" \
+    "🌙 Toggle nightly schedule" \
+    "🌐 Open web dashboard" \
+    "🗑️  Clear experiment logs" \
+    "← Back")
+
+  case "$action" in
+    "📁 Open projects folder") open "$PROJECTS_DIR" ;;
+    "📝 Edit runner script") ${EDITOR:-nano} "$RUNNER" ;;
+    "🌙 Toggle nightly schedule")
+      if [ "$nightly" = "active" ]; then
+        launchctl bootout gui/$(id -u)/com.autoresearch.nightly 2>/dev/null
+        gum style --foreground 203 "  Nightly disabled"
+      else
+        launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.autoresearch.nightly.plist 2>/dev/null
+        gum style --foreground 114 "  Nightly enabled"
+      fi
+      sleep 1 ;;
+    "🌐 Open web dashboard") open "http://localhost:4100" 2>/dev/null || gum style --foreground 203 "  Dashboard not running. Start with: autoclawdev-ui" ;;
+    "🗑️  Clear experiment logs")
+      if gum confirm "Clear ALL experiment logs?"; then
+        rm -f "$WORKSPACE"/experiments-*.jsonl
+        gum style --foreground 114 "  Logs cleared"
+        sleep 1
+      fi ;;
+    "← Back"|"") return ;;
+  esac
+}
+
+# ── Run (CLI mode) ───────────────────────────────────────────────────
+FULL_CYCLE_PROFILES=("reliability" "security" "performance" "quality" "issues")
+
+# Full cycle: run all 5 profiles in sequence, 1 cycle each = 1 complete pass
+cmd_full_cycle() {
+  local project_key=$1
+  local passes=${2:-1}
+
+  if [ -z "$project_key" ]; then
+    gum style --foreground 203 "Usage: autoclaw run <project> [passes]"
+    return 1
+  fi
+
+  prepare_project_env "$project_key" || return 1
+
+  local total=$((passes * ${#FULL_CYCLE_PROFILES[@]}))
+  local current=0
+
+  for pass in $(seq 1 "$passes"); do
+    [ "$passes" -gt 1 ] && gum style --foreground 117 --bold "  Pass $pass/$passes"
+    for profile in "${FULL_CYCLE_PROFILES[@]}"; do
+      current=$((current + 1))
+      gum style --foreground 215 "  [$current/$total] Profile: $profile"
+      AUTOCLAWDEV_TEAM_PROFILE="$profile" run_runner_once "$project_key" 1 "" "append"
+      local rc=$?
+      if [ $rc -ne 0 ]; then
+        gum style --foreground 203 "  Profile $profile failed (exit $rc)"
+      fi
+    done
+  done
+
+  gum style --foreground 114 "  Done: $passes full cycle(s) × ${#FULL_CYCLE_PROFILES[@]} profiles = $total runs"
+}
+
+cmd_run() {
+  local project_key=$1
+  local project_default_cycles
+  project_default_cycles="$(get_project_field "$project_key" "default_cycles" 2>/dev/null)"
+  local cycles=${2:-${project_default_cycles:-5}}
+  local run_mode=${3:-""}
+  run_runner_once "$project_key" "$cycles" "$run_mode" "truncate"
+}
+
+cmd_security() {
+  cmd_profile_run "security" "$1" "${2:-5}"
+}
+
+cmd_profile_run() {
+  local profile_input=$1
+  local project_key=$2
+  local cycles=${3:-5}
+  local profile=""
+
+  if ! profile=$(normalize_team_profile "$profile_input"); then
+    gum style --foreground 203 "Unknown profile: $profile_input"
+    gum style --foreground 242 "Available: $(list_team_profiles | tr '\n' ' ')"
+    return 1
+  fi
+
+  AUTOCLAWDEV_TEAM_PROFILE="$profile" run_runner_once "$project_key" "$cycles" "" "truncate"
+}
+
+cmd_memory_init() {
+  local project_key=${1:-""}
+  if [ -z "$project_key" ]; then
+    gum style --foreground 203 "Usage: autoclawdev memory-init <project>"
+    return 1
+  fi
+  prepare_project_env "$project_key" || return 1
+
+  local repo="$AUTOCLAWDEV_REPO"
+  local memory_dir="$WORKSPACE/memory"
+  local program="$WORKSPACE/program-${project_key}.md"
+  local config="$PROJECTS_DIR/${project_key}.json"
+  local runner_dir="$REPO_ROOT/scripts"
+
+  gum style --foreground 117 --bold "🧠 Memory Init — $project_key"
+  gum style --foreground 242 "Scanning codebase at $repo..."
+
+  # Build file listing
+  local file_listing
+  file_listing=$(cd "$repo" && find . \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.jsx' -o -name '*.py' \) \
+    -not -path '*/node_modules/*' -not -path '*/dist/*' -not -path '*/.next/*' \
+    -not -name '*.test.*' -not -name '*.spec.*' -not -path '*/__tests__/*' \
+    | sort | head -200)
+
+  local test_listing
+  test_listing=$(cd "$repo" && find . \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' \) \
+    -not -path '*/node_modules/*' | sort | head -100)
+
+  local file_count=$(echo "$file_listing" | grep -c . || echo 0)
+  local test_count=$(echo "$test_listing" | grep -c . || echo 0)
+  gum style --foreground 242 "Found $file_count source files, $test_count test files"
+
+  local program_content=""
+  [ -f "$program" ] && program_content=$(head -30 "$program")
+
+  gum style --foreground 117 "Running Opus scan (this takes ~3-5 minutes)..."
+
+  local scan_output
+  scan_output=$(cd "$repo" && claude --model opus -p "You are scanning this codebase to build a memory map for an autonomous development system.
+
+Repository: $repo
+$program_content
+
+Source files (top 200):
+$file_listing
+
+Test files:
+$test_listing
+
+Analyze the codebase structure and respond with EXACTLY this JSON (no markdown fences, no explanation — raw JSON only):
+{
+  \"files\": [
+    {\"path\": \"relative/path.ts\", \"summary\": \"what this file does (1 line max)\", \"related_tests\": [\"test/path.ts\"], \"known_risks\": [\"risk description\"], \"related_files\": [\"other/file.ts\"]}
+  ],
+  \"findings\": [
+    {\"title\": \"description of potential issue or improvement\", \"directive\": \"bug-fix|performance|security|refactor\", \"domain\": \"backend|frontend\", \"target_files\": [\"path.ts\"], \"status\": \"open\"}
+  ],
+  \"themes\": [\"theme1\", \"theme2\"]
+}
+
+Focus on: the 30 most important source files, 5-10 potential improvements you can see from the structure, and 3-5 recurring themes.
+Respond with ONLY the JSON object — no markdown, no explanation.")
+
+  if [ -z "$scan_output" ]; then
+    gum style --foreground 203 "ERROR: Opus scan returned empty output"
+    return 1
+  fi
+
+  echo "$scan_output" | python3 "$runner_dir/memory_cache.py" seed-memory \
+    --project "$project_key" \
+    --repo "$repo" \
+    --memory-dir "$memory_dir" \
+    --program "$program" \
+    --project-config "$config"
+
+  local seed_status=$?
+  if [ $seed_status -eq 0 ]; then
+    gum style --foreground 114 --bold "✓ Memory seeded for $project_key"
+    gum style --foreground 242 "Memory dir: $memory_dir/$project_key"
+  else
+    gum style --foreground 203 "ERROR: Memory seeding failed (exit $seed_status)"
+    return 1
+  fi
+}
+
+cmd_wigman() {
+  local project_key=${1:-""}
+  local batch_cycles=${2:-25}
+  local parallel_cycles=${3:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}
+  local success_sleep=${AUTOCLAWDEV_WIGMAN_SUCCESS_SLEEP_SECONDS:-3}
+  local failure_sleep=${AUTOCLAWDEV_WIGMAN_FAILURE_SLEEP_SECONDS:-20}
+  local max_failures=${AUTOCLAWDEV_WIGMAN_MAX_CONSECUTIVE_FAILURES:-3}
+  local lockfile="$WORKSPACE/.lock-${project_key}"
+  local loop_log="$WORKSPACE/run-${project_key}.log"
+  local child=""
+  local batch_number=1
+  local consecutive_failures=0
+
+  if [ -z "$project_key" ]; then
+    gum style --foreground 238 "Usage: autoclawdev wigman <project> [batch-cycles] [parallel]"
+    return 1
+  fi
+
+  if ! project_exists "$project_key"; then
+    gum style --foreground 203 "Project not found: $project_key"
+    echo "Available: $(get_projects | tr '\n' ' ')"
+    return 1
+  fi
+
+  [ "$batch_cycles" -gt $MAX_CYCLES ] 2>/dev/null && batch_cycles=$MAX_CYCLES
+  [ "$batch_cycles" -lt 1 ] 2>/dev/null && batch_cycles=1
+  [ "$parallel_cycles" -lt 1 ] 2>/dev/null && parallel_cycles=1
+  [ "$success_sleep" -lt 0 ] 2>/dev/null && success_sleep=0
+  [ "$failure_sleep" -lt 0 ] 2>/dev/null && failure_sleep=0
+  [ "$max_failures" -lt 1 ] 2>/dev/null && max_failures=1
+
+  mkdir -p "$WORKSPACE"
+
+  if [ -f "$lockfile" ]; then
+    local lock_pid
+    lock_pid=$(cat "$lockfile" 2>/dev/null || true)
+    if [ -n "$lock_pid" ] && kill -0 "$lock_pid" 2>/dev/null; then
+      gum style --foreground 203 "Another autoresearch run is active on $project_key (pid $lock_pid)"
+      return 1
+    fi
+    rm -f "$lockfile"
+  fi
+
+  cleanup_wigman() {
+    local pid="" child=""
+    # Kill direct children (runner processes)
+    for pid in $(pgrep -P $$ 2>/dev/null || true); do
+      # Also kill the runner's children (worker processes)
+      for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+        kill -TERM "$child" 2>/dev/null || true
+      done
+      kill -TERM "$pid" 2>/dev/null || true
+    done
+    sleep 2
+    # Force-kill any survivors
+    for pid in $(pgrep -P $$ 2>/dev/null || true); do
+      for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+        kill -KILL "$child" 2>/dev/null || true
+      done
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+    rm -f "$lockfile"
+  }
+
+  trap cleanup_wigman EXIT INT TERM
+  echo $$ > "$lockfile"
+
+  gum style --foreground 114 "  Starting Ralph Wigman loop on $project_key"
+  gum style --foreground 242 "  Batch size: $batch_cycles cycles · Parallel: $parallel_cycles"
+  gum style --foreground 242 "  Stop with: autoclawdev stop $project_key"
+
+  while true; do
+    printf "\n[%s] WIGMAN batch %d starting (%d cycles, parallel %d)\n" \
+      "$(date '+%Y-%m-%d %H:%M:%S')" "$batch_number" "$batch_cycles" "$parallel_cycles" \
+      | tee -a "$loop_log" "$WORKSPACE/run.log"
+
+    AUTOCLAWDEV_SKIP_PROJECT_LOCK=1 \
+    AUTOCLAWDEV_MAX_PARALLEL_CYCLES="$parallel_cycles" \
+    run_runner_once "$project_key" "$batch_cycles" "" "append"
+    local status=$?
+
+    if [ "$status" -eq 0 ]; then
+      consecutive_failures=0
+      batch_number=$((batch_number + 1))
+      [ "$success_sleep" -gt 0 ] && sleep "$success_sleep"
+      continue
+    fi
+
+    consecutive_failures=$((consecutive_failures + 1))
+    gum style --foreground 203 \
+      "  Wigman batch failed (exit $status). Consecutive failures: $consecutive_failures/$max_failures"
+
+    if [ "$consecutive_failures" -ge "$max_failures" ]; then
+      gum style --foreground 203 "  Stopping Wigman loop after repeated runner failures."
+      return "$status"
+    fi
+
+    [ "$failure_sleep" -gt 0 ] && sleep "$failure_sleep"
+    batch_number=$((batch_number + 1))
+  done
+}
+
+cmd_security_wigman() {
+  cmd_profile_wigman "security" "${1:-}" "${2:-25}" "${3:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}"
+}
+
+cmd_profile_wigman() {
+  local profile_input=$1
+  local project_key=${2:-""}
+  local batch_cycles=${3:-25}
+  local parallel_cycles=${4:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}
+  local profile=""
+
+  if ! profile=$(normalize_team_profile "$profile_input"); then
+    gum style --foreground 203 "Unknown profile: $profile_input"
+    gum style --foreground 242 "Available: $(list_team_profiles | tr '\n' ' ')"
+    return 1
+  fi
+
+  AUTOCLAWDEV_TEAM_PROFILE="$profile" cmd_wigman "$project_key" "$batch_cycles" "$parallel_cycles"
+}
+
+cmd_workflow_run() {
+  local workflow_type=$1
+  local project_key=${2:-""}
+  local cycles=${3:-5}
+  local wf=""
+
+  if ! wf=$(normalize_workflow_type "$workflow_type"); then
+    gum style --foreground 203 "Unknown workflow: $workflow_type"
+    gum style --foreground 242 "Available: $(list_workflow_types | tr '\n' ' ')"
+    return 1
+  fi
+
+  if [ "$wf" = "implement-only" ] && [ -z "${AUTOCLAWDEV_GOAL:-}" ]; then
+    gum style --foreground 203 "implement-only requires AUTOCLAWDEV_GOAL to be set"
+    return 1
+  fi
+
+  AUTOCLAWDEV_WORKFLOW_TYPE="$wf" run_runner_once "$project_key" "$cycles" "" "truncate"
+}
+
+cmd_workflows() {
+  header
+  echo ""
+  gum style --foreground 242 --bold "  WORKFLOW TYPES"
+  echo ""
+  printf "  $(gum style --foreground 117 '%-18s') %s\n" "standard" "Full pipeline: research → plan → impl → review → validate → commit"
+  printf "  $(gum style --foreground 117 '%-18s') %s\n" "implement-only" "Skip research/planning — provide goal via AUTOCLAWDEV_GOAL"
+  printf "  $(gum style --foreground 117 '%-18s') %s\n" "review-only" "CodeRabbit + Penny review pass only, no code changes"
+  printf "  $(gum style --foreground 117 '%-18s') %s\n" "fast-ship" "No deep Penny review, 1 CodeRabbit round — maximum speed"
+  printf "  $(gum style --foreground 117 '%-18s') %s\n" "batch-research" "Multi-finding research, then impl cycle per finding"
+  printf "  $(gum style --foreground 117 '%-18s') %s\n" "research-only" "Research findings log only — no implementation"
+  echo ""
+  gum style --foreground 242 "Set per-project: add 'workflow_type' to your project JSON"
+  gum style --foreground 242 "Override at runtime: AUTOCLAWDEV_WORKFLOW_TYPE=fast-ship autoclawdev run <project>"
+  echo ""
+}
+
+cmd_profiles() {
+  header
+  echo ""
+  gum style --foreground 242 --bold "  TEAM PROFILES"
+  echo ""
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "reliability" "General bug-fixing and hardening"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "security" "Vulnerabilities, secure defaults, attack-surface reduction"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "performance" "Latency, memory, query count, redundant work"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "test-hardening" "Regression tests and flaky-behavior stabilization"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "frontend-quality" "Accessibility, interaction, responsive and visual quality"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "dependency-hygiene" "Supply chain, package risk, audit and license hygiene"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "api-contract" "Schema and request/response contract safety"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "data-integrity" "Idempotency, races, duplicate writes, transactional safety"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "privacy-compliance" "PII exposure, logging, retention, consent handling"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "mobile-quality" "Device behavior, permissions, offline and navigation issues"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "refactor-safety" "Behavior-preserving simplification"
+  printf "  $(gum style --foreground 117 '%-20s') %s\n" "issue-burner" "Open GitHub issue driven work"
+  echo ""
+}
+
+# ── List (CLI mode) ──────────────────────────────────────────────────
+cmd_list() {
+  header
+  echo ""
+  for key in $(get_projects); do
+    local name=$(get_project_name "$key")
+    read total passed failed rate <<< $(get_exp_stats "$key")
+    local running=$(is_running "$key")
+    local status="○"
+    [ "$running" = "yes" ] && status="●"
+    printf "  %s $(gum style --foreground 215 '%-15s') %-18s %3d exp  $(gum style --foreground 114 "✓%-3d") $(gum style --foreground 203 "✗%-3d") %3d%%\n" \
+      "$status" "$key" "$name" "$total" "$passed" "$failed" "$rate"
+  done
+  echo ""
+}
+
+# ── Log (CLI mode) ───────────────────────────────────────────────────
+cmd_log() {
+  local key=${1:-""}
+
+  if [ -z "$key" ]; then
+    header
+    echo ""
+    for k in $(get_projects); do
+      local expfile="$WORKSPACE/experiments-${k}.jsonl"
+      [ -f "$expfile" ] && [ -s "$expfile" ] || continue
+      read total passed _ _ <<< $(get_exp_stats "$k")
+      printf "  $(gum style --foreground 215 '%-15s') %d experiments, %d passed\n" "$k" "$total" "$passed"
+    done
+    echo ""
+    gum style --foreground 238 "  Usage: autoclawdev log <project>"
+    return
+  fi
+
+  local expfile="$WORKSPACE/experiments-${key}.jsonl"
+  if [ ! -f "$expfile" ] || [ ! -s "$expfile" ]; then
+    echo "  No experiments for $key."
+    return
+  fi
+
+  echo ""
+  gum style --foreground 117 --bold "  $key"
+  echo ""
+
+  stream_experiments "$expfile" | python3 -c "
+import json, sys
+rows = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    rows.append(json.loads(line))
+
+rows.sort(key=lambda exp: exp.get('timestamp', ''), reverse=True)
+for e in rows:
+    result = e.get('result', '?')
+    icon = '✓' if result == 'pass' else '✗'
+    color = '\033[38;5;114m' if result == 'pass' else '\033[38;5;203m'
+    rst = '\033[0m'
+    elapsed = e.get('elapsed', 0)
+    em = f'{elapsed//60}m {elapsed%60}s' if elapsed > 60 else f'{elapsed}s'
+    commit = e.get('commit', '')[:7]
+    desc = (e.get('description') or '?')[:50]
+    domain = e.get('domain', '')
+    issue = e.get('gh_issue', '')
+    issue_str = f' #{issue}' if issue else ''
+    print(f'  {color}{icon}{rst}  {e.get(\"id\",\"?\"):8}  {em:>6}  {commit:7}  {domain:8}{issue_str}')
+    print(f'     {desc}')
+    print()
+" 2>/dev/null
+}
+
+# ── Add Project ──────────────────────────────────────────────────────
+cmd_add() {
+  local repo_path=${1:-""}
+
+  if [ -z "$repo_path" ]; then
+    # Interactive mode
+    repo_path=$(gum input --placeholder "/path/to/project" --prompt "Project path: " --width 50)
+  fi
+
+  [ -z "$repo_path" ] && return
+  repo_path=$(cd "$repo_path" 2>/dev/null && pwd)
+  if [ ! -d "$repo_path" ]; then
+    gum style --foreground 203 "Directory not found: $repo_path"
+    return
+  fi
+
+  local dir_name=$(basename "$repo_path")
+  local key=$(echo "$dir_name" | tr '[:upper:]' '[:lower:]' | tr ' .' '-')
+
+  local pm="npm"
+  [ -f "$repo_path/pnpm-lock.yaml" ] && pm="pnpm"
+  [ -f "$repo_path/bun.lockb" ] && pm="bun"
+
+  local test_cmd="" lint_cmd="" security_cmd="" security_dependency_cmd="" performance_cmd=""
+  if [ -f "$repo_path/package.json" ]; then
+    test_cmd=$(python3 -c "import json;t=json.load(open('$repo_path/package.json')).get('scripts',{}).get('test','');print(t if t and 'no test' not in t else '')" 2>/dev/null)
+    lint_cmd=$(python3 -c "import json;print(json.load(open('$repo_path/package.json')).get('scripts',{}).get('lint',''))" 2>/dev/null)
+    security_cmd=$(python3 -c "import json; scripts=json.load(open('$repo_path/package.json')).get('scripts',{}); candidates=['security','security:audit','security:scan','audit','lint:security']; print(next((f\"$pm run {name}\" for name in candidates if scripts.get(name)), ''))" 2>/dev/null)
+    security_dependency_cmd=$(python3 -c "import json; scripts=json.load(open('$repo_path/package.json')).get('scripts',{}); cmds=[]; audit=scripts.get('security:audit') or scripts.get('audit'); licenses=scripts.get('security:check-licenses');\nprint(' && '.join([f\"$pm run security:audit\" if audit else '', f\"$pm run security:check-licenses\" if licenses else '']).replace(' &&  && ',' && ').strip(' &'))" 2>/dev/null)
+    performance_cmd=$(python3 -c "import json; scripts=json.load(open('$repo_path/package.json')).get('scripts',{}); candidates=['performance','performance:bundle','perf','analyze:bundle']; print(next((f\"$pm run {name}\" for name in candidates if scripts.get(name)), ''))" 2>/dev/null)
+    [ -n "$test_cmd" ] && test_cmd="$pm test"
+    [ -n "$lint_cmd" ] && lint_cmd="$pm lint"
+  fi
+
+  local desc=$(gum input --placeholder "Project description" --prompt "Description: " --width 50)
+
+  cat > "$PROJECTS_DIR/${key}.json" << EOF
+{
+  "name": "$dir_name",
+  "path": "$repo_path",
+  "description": "${desc:-$dir_name}",
+  "package_manager": "$pm",
+  "test_cmd": "$test_cmd",
+  "lint_cmd": "$lint_cmd",
+  "security_cmd": "$security_cmd",
+  "security_dependency_cmd": "$security_dependency_cmd",
+  "performance_cmd": "$performance_cmd",
+  "focus": ["Test coverage", "Bug fixes", "Code quality", "Performance"]
+}
+EOF
+
+  gum style --foreground 114 "  ✓ Added $dir_name as $(gum style --foreground 215 "$key")"
+}
+
+# ── Stop a run ───────────────────────────────────────────────────────
+cmd_stop() {
+  local key=${1:-""}
+  if [ -z "$key" ]; then
+    local active=()
+    for k in $(get_projects); do
+      [ "$(is_running "$k")" = "yes" ] && active+=("$k")
+    done
+    if [ ${#active[@]} -eq 0 ]; then
+      gum style --foreground 242 "No active runs."
+      return
+    fi
+    key=$(printf '%s\n' "${active[@]}" | gum choose --header "Stop which run?")
+  fi
+  [ -z "$key" ] && return
+
+  local lockfile="$WORKSPACE/.lock-${key}"
+  if [ -f "$lockfile" ]; then
+    local pid=$(cat "$lockfile")
+    kill "$pid" 2>/dev/null && gum style --foreground 114 "  Stopped $key (pid $pid)" || gum style --foreground 203 "  Failed to stop"
+    rm -f "$lockfile"
+  fi
+}
+
+# ── Status ───────────────────────────────────────────────────────────
+cmd_status() {
+  header
+  echo ""
+
+  local nightly="inactive"
+  launchctl list 2>/dev/null | grep -q "com.autoresearch.nightly" && nightly="active"
+  printf "  Nightly:  %s\n" "$([ "$nightly" = "active" ] && gum style --foreground 114 "● Active (2am)" || gum style --foreground 203 "● Inactive")"
+  echo ""
+
+  for key in $(get_projects); do
+    local name=$(get_project_name "$key")
+    read total passed failed rate <<< $(get_exp_stats "$key")
+    local running=$(is_running "$key")
+    local status="$(gum style --foreground 242 '○ idle')"
+    [ "$running" = "yes" ] && status="$(gum style --foreground 114 '● running')"
+    printf "  $(gum style --foreground 215 '%-15s') %-18s %s  %d exp, %d%% pass\n" "$key" "$name" "$status" "$total" "$rate"
+  done
+  echo ""
+}
+
+cmd_doctor() {
+  local failures=0
+
+  header
+  echo ""
+  gum style --foreground 242 --bold "  TOOLCHAIN"
+  echo ""
+  doctor_check_command required bash "bash" || failures=$((failures + 1))
+  doctor_check_command required node "node" || failures=$((failures + 1))
+  doctor_check_command required pnpm "pnpm" || failures=$((failures + 1))
+  doctor_check_command required python3 "python3" || failures=$((failures + 1))
+  doctor_check_command required git "git" || failures=$((failures + 1))
+  doctor_check_command required gh "gh" || failures=$((failures + 1))
+  doctor_check_command required gum "gum" || failures=$((failures + 1))
+  doctor_check_command required claude "claude" || failures=$((failures + 1))
+  doctor_check_command required codex "codex" || failures=$((failures + 1))
+  doctor_check_command required coderabbit "coderabbit" || failures=$((failures + 1))
+  doctor_check_command required curl "curl" || failures=$((failures + 1))
+  doctor_check_command required lsof "lsof" || failures=$((failures + 1))
+  doctor_check_command optional launchctl "launchctl" || true
+  doctor_check_command optional open "open" || true
+
+  echo ""
+  gum style --foreground 242 --bold "  PATHS"
+  echo ""
+  doctor_check_dir required "$REPO_ROOT" "repo" || failures=$((failures + 1))
+  doctor_check_dir required "$PROJECTS_DIR" "projects dir" || failures=$((failures + 1))
+  doctor_check_dir required "$WORKSPACE" "workspace" || failures=$((failures + 1))
+
+  if [ -x "$RUNNER" ]; then
+    print_doctor_line "ok" "runner source" "$RUNNER"
+  else
+    print_doctor_line "fail" "runner source" "missing or not executable: $RUNNER"
+    failures=$((failures + 1))
+  fi
+
+  if [ -f "$VERSION_FILE" ]; then
+    print_doctor_line "ok" "version file" "$VERSION"
+  else
+    print_doctor_line "fail" "version file" "missing: $VERSION_FILE"
+    failures=$((failures + 1))
+  fi
+
+  echo ""
+  gum style --foreground 242 --bold "  INSTALL LINKS"
+  echo ""
+  doctor_check_link "$HOME/.local/bin/autoclawdev" "$REPO_ROOT/bin/autoclawdev" "autoclawdev link"
+  doctor_check_link "$HOME/.local/bin/autoclawdev-ui" "$REPO_ROOT/bin/autoclawdev-ui" "ui link"
+  doctor_check_link "$WORKSPACE/runner.sh" "$REPO_ROOT/scripts/runner.sh" "runner link"
+
+  echo ""
+  gum style --foreground 242 --bold "  BUILD OUTPUT"
+  echo ""
+  if [ -f "$REPO_ROOT/apps/server/dist/index.js" ]; then
+    print_doctor_line "ok" "server dist" "$REPO_ROOT/apps/server/dist/index.js"
+  else
+    print_doctor_line "fail" "server dist" "missing: run make build"
+    failures=$((failures + 1))
+  fi
+
+  if [ -f "$REPO_ROOT/apps/web/dist/index.html" ]; then
+    print_doctor_line "ok" "web dist" "$REPO_ROOT/apps/web/dist/index.html"
+  else
+    print_doctor_line "fail" "web dist" "missing: run make build"
+    failures=$((failures + 1))
+  fi
+
+  echo ""
+  if [ "$failures" -gt 0 ]; then
+    gum style --foreground 203 "  Doctor failed with $failures blocking issue(s)."
+    return 1
+  fi
+
+  gum style --foreground 114 "  Doctor passed."
+}
+
+# ── Web Audit ────────────────────────────────────────────────────────
+cmd_audit() {
+  local target="${1:-}"
+  local extract_flag="${2:-}"
+  if [ -z "$target" ]; then
+    gum style --foreground 203 "Usage: autoclawdev audit <url> [--extract]"
+    gum style --foreground 242 "  Runs an external black-box security assessment against a web application."
+    gum style --foreground 242 "  --extract    Also extract all accessible data to CSV (breach scope assessment)"
+    return 1
+  fi
+  local script_dir
+  script_dir="$(resolve_source "${BASH_SOURCE[0]}")/../scripts"
+  local output_dir
+  local domain
+  domain=$(printf "%s" "$target" | sed -E 's|https?://||;s|/.*||;s|:.*||')
+  local timestamp
+  timestamp=$(date +%Y%m%d_%H%M%S)
+  output_dir="$HOME/Desktop/audit_${domain}_${timestamp}"
+
+  gum style --foreground 117 --bold "  Web Security Audit: $target"
+  echo ""
+
+  local extra_args=""
+  if [ "$extract_flag" = "--extract" ] || [ "$extract_flag" = "-e" ]; then
+    extra_args="--extract"
+    gum style --foreground 215 "  Mode: Full scan + data extraction"
+  else
+    gum style --foreground 215 "  Mode: Scan only (use --extract to pull data)"
+  fi
+  gum style --foreground 242 "  Output: $output_dir"
+  echo ""
+
+  python3 "$script_dir/web_audit.py" "$target" --output "$output_dir" $extra_args
+
+  local report_path
+  report_path=$(find "$output_dir" -name "security_report_*.pdf" 2>/dev/null | head -1)
+  if [ -n "$report_path" ]; then
+    echo ""
+    gum style --foreground 82 --bold "  Report: $report_path"
+    gum style --foreground 82 "  Findings: $output_dir/findings_${domain}.json"
+  fi
+}
+
+# ── Help ─────────────────────────────────────────────────────────────
+cmd_help() {
+  header
+  local c="117" p="215" d="242"
+  echo ""
+  gum style --foreground "$d" --bold "  RUN"
+  echo ""
+  printf "  $(gum style --foreground $c 'autoclaw run') $(gum style --foreground $p '<project>')                      Full cycle (all 5 profiles)\n"
+  printf "  $(gum style --foreground $c 'autoclaw run') $(gum style --foreground $p '<project> 3')                   3 full cycles\n"
+  printf "  $(gum style --foreground $c 'autoclaw run') $(gum style --foreground $p '<project> -p security')         Single profile only\n"
+  printf "  $(gum style --foreground $c 'autoclaw review') $(gum style --foreground $p '<project> [--codex|--codex-fast]') Deep codebase review + fix\n"
+  printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> [N]')               Continuous full cycles (default 5)\n"
+  printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> -p security')        Continuous single profile\n"
+  printf "  $(gum style --foreground $c 'autoclaw stop') $(gum style --foreground $p '[project]')                    Stop an active run\n"
+  echo ""
+  gum style --foreground "$d" --bold "  PROJECTS"
+  echo ""
+  printf "  $(gum style --foreground $c 'autoclaw list')                                         List all projects\n"
+  printf "  $(gum style --foreground $c 'autoclaw add') $(gum style --foreground $p '<path>')                                Add a project\n"
+  printf "  $(gum style --foreground $c 'autoclaw log') $(gum style --foreground $p '[project]')                             Experiment history\n"
+  printf "  $(gum style --foreground $c 'autoclaw status')                                       Active runs + stats\n"
+  printf "  $(gum style --foreground $c 'autoclaw github') $(gum style --foreground $p '<project>')                          GitHub issues\n"
+  echo ""
+  gum style --foreground "$d" --bold "  TOOLS"
+  echo ""
+  printf "  $(gum style --foreground $c 'autoclaw audit') $(gum style --foreground $p '<url>')                               Web security audit\n"
+  printf "  $(gum style --foreground $c 'autoclaw ingest') $(gum style --foreground $p '<project> [deep-review|qa|profile]') Feed findings into memory\n"
+  printf "  $(gum style --foreground $c 'autoclaw memory') $(gum style --foreground $p '<project>')                          Initialize/refresh project memory\n"
+  printf "  $(gum style --foreground $c 'autoclaw ui')                                           Web dashboard\n"
+  printf "  $(gum style --foreground $c 'autoclaw doctor')                                       Verify install\n"
+  echo ""
+  gum style --foreground "$d" --bold "  PROFILES"
+  printf "  reliability (default), security, performance, quality, issues\n"
+  echo ""
+  gum style --foreground "$d" --bold "  ADVANCED"
+  echo ""
+  printf "  $(gum style --foreground $c 'autoclaw workflow') $(gum style --foreground $p '<type> <project> [N]')     standard, implement-only, review-only, fast-ship, research-only, deep-review\n"
+  printf "  $(gum style --foreground $c 'autoclaw cycle') $(gum style --foreground $p '<project> [exp-id]')         Per-agent cycle details\n"
+  printf "  $(gum style --foreground $c 'autoclaw tail') $(gum style --foreground $p '[project]')                   Tail run log\n"
+  printf "  $(gum style --foreground $c 'autoclaw dashboard')                                    Full-screen TUI dashboard\n"
+  echo ""
+}
+
+# ── Parse -p <profile> flag from any position ────────────────────────
+_parse_profile_flag() {
+  local args=("$@")
+  PARSED_PROFILE=""
+  PARSED_ARGS=()
+  local i=0
+  while [ $i -lt ${#args[@]} ]; do
+    if [ "${args[$i]}" = "-p" ] && [ $((i + 1)) -lt ${#args[@]} ]; then
+      PARSED_PROFILE="${args[$((i + 1))]}"
+      i=$((i + 2))
+    else
+      PARSED_ARGS+=("${args[$i]}")
+      i=$((i + 1))
+    fi
+  done
+}
+
+# ── Route ────────────────────────────────────────────────────────────
+case "${1:-}" in
+  # ── Core commands ──────────────────────────────────────────────────
+  run)
+    shift
+    _parse_profile_flag "$@"
+    if [ -n "$PARSED_PROFILE" ]; then
+      # Single profile mode: autoclaw run project N -p security
+      cmd_profile_run "$PARSED_PROFILE" "${PARSED_ARGS[0]:-}" "${PARSED_ARGS[1]:-1}"
+    else
+      # Full cycle mode: autoclaw run project [passes]
+      cmd_full_cycle "${PARSED_ARGS[0]:-}" "${PARSED_ARGS[1]:-1}"
+    fi
+    ;;
+  review|deep-review)
+    "$REPO_ROOT/scripts/deep-review.sh" "${@:2}" ;;
+  loop|wigman|ralph)
+    shift
+    _parse_profile_flag "$@"
+    if [ -n "$PARSED_PROFILE" ]; then
+      # Single profile loop: autoclaw loop project N -p security
+      cmd_profile_wigman "$PARSED_PROFILE" "${PARSED_ARGS[0]:-}" "${PARSED_ARGS[1]:-25}" "${PARSED_ARGS[2]:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}"
+    else
+      # Full cycle loop: runs all profiles per cycle, repeats N times
+      cmd_full_cycle "${PARSED_ARGS[0]:-}" "${PARSED_ARGS[1]:-5}"
+    fi
+    ;;
+  stop)      cmd_stop "${2:-}" ;;
+
+  # ── Projects ───────────────────────────────────────────────────────
+  list|ls)   cmd_list ;;
+  add)       cmd_add "${2:-}" ;;
+  log)       cmd_log "${2:-}" ;;
+  status|st) cmd_status ;;
+  github|gh) cmd_github "${2:-}"; echo "" ;;
+
+  # ── Tools ──────────────────────────────────────────────────────────
+  audit)     cmd_audit "${2:-}" "${3:-}" ;;
+  ingest|ingest-memory) "$REPO_ROOT/scripts/ingest-to-memory.sh" "${@:2}" ;;
+  memory|memory-init|mem-init) cmd_memory_init "${2:-}" ;;
+  ui)        "$UI_LAUNCHER" "${@:2}" ;;
+  doctor)    cmd_doctor ;;
+
+  # ── Advanced ───────────────────────────────────────────────────────
+  workflow)  cmd_workflow_run "${2:-standard}" "${3:-}" "${4:-5}" ;;
+  cycle)     cmd_cycle "${2:-}" "${3:-}" ;;
+  tail)      cmd_tail "${2:-}" ;;
+  dashboard) cmd_dashboard ;;
+  profiles)  cmd_profiles ;;
+  workflows) cmd_workflows ;;
+
+  # ── Legacy aliases (still work, route to new commands) ─────────────
+  security)     cmd_profile_run "security" "${2:-}" "${3:-5}" ;;
+  performance)  cmd_profile_run "performance" "${2:-}" "${3:-5}" ;;
+  quality)      cmd_profile_run "quality" "${2:-}" "${3:-5}" ;;
+  issues)       cmd_profile_run "issues" "${2:-}" "${3:-5}" ;;
+  implement)    cmd_workflow_run "implement-only" "${2:-}" "${3:-5}" ;;
+  review-run)   cmd_workflow_run "review-only" "${2:-}" "${3:-5}" ;;
+  fast-ship)    cmd_workflow_run "fast-ship" "${2:-}" "${3:-5}" ;;
+  research)     cmd_workflow_run "research-only" "${2:-}" "${3:-5}" ;;
+  profile)      cmd_profile_run "${2:-}" "${3:-}" "${4:-5}" ;;
+  security-wigman|security-ralph) cmd_profile_wigman "security" "${2:-}" "${3:-25}" "${4:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}" ;;
+  profile-wigman|profile-ralph) cmd_profile_wigman "${2:-}" "${3:-}" "${4:-25}" "${5:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}" ;;
+  # Old profile names still route through (runner normalizes them)
+  test-hardening|frontend-quality|dependency-hygiene|api-contract|data-integrity|privacy-compliance|mobile-quality|refactor-safety|issue-burner)
+    cmd_profile_run "$1" "${2:-}" "${3:-5}" ;;
+  *-wigman)
+    local _profile="${1%-wigman}"
+    cmd_profile_wigman "$_profile" "${2:-}" "${3:-25}" "${4:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}" ;;
+
+  # ── Meta ───────────────────────────────────────────────────────────
+  version|--version|-V) printf "%s\n" "$VERSION" ;;
+  help|--help|-h) cmd_help ;;
+  "")        cmd_interactive ;;
+  *)         gum style --foreground 203 "Unknown command: $1"; echo ""; cmd_help ;;
+esac
