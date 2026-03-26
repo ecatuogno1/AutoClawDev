@@ -4,6 +4,7 @@ node_modules/
 # Build output
 apps/web/dist/
 apps/server/dist/
+packages/types/dist/
 
 # Locks and logs
 pnpm-lock.yaml
