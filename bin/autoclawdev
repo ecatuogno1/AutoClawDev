@@ -713,10 +713,10 @@ cmd_loop_interactive() {
     gum style --foreground 114 "Starting loop: $project_key / $profile / $cycles cycles..."
     cmd_profile_wigman "$profile" "$project_key" "$cycles" "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}"
   else
-    local batches=$(gum choose --header "Batches (5 full cycles each, merge after each):" "1" "3" "5" "10")
+    local runs=$(gum choose --header "Runs (1 run = 5 profiles, merge after each):" "3" "5" "10" "25")
     echo ""
-    gum style --foreground 114 "Starting loop: $project_key / $batches batches × 5 cycles (merge to main after each batch)..."
-    cmd_loop "$project_key" "$batches"
+    gum style --foreground 114 "Starting loop: $project_key / $runs runs (merge to main after each)..."
+    cmd_loop "$project_key" "$runs"
   fi
 }
 
@@ -1644,42 +1644,31 @@ merge_to_main() {
   fi
 }
 
-LOOP_BATCH_SIZE="${AUTOCLAW_LOOP_BATCH:-5}"
-
 cmd_loop() {
   local project_key=$1
-  local total_batches=${2:-5}
+  local runs=${2:-5}
 
   if [ -z "$project_key" ]; then
-    gum style --foreground 203 "Usage: autoclaw loop <project> [batches]"
+    gum style --foreground 203 "Usage: autoclaw loop <project> [runs]"
     return 1
   fi
 
-  local batch_size="$LOOP_BATCH_SIZE"
-  local total_cycles=$((total_batches * batch_size))
+  local profiles=${#FULL_CYCLE_PROFILES[@]}
+  local total_cycles=$((runs * profiles))
 
   echo ""
-  gum style --foreground 117 --bold "  Loop: $total_batches batches × $batch_size full cycles = $total_cycles full cycles"
-  gum style --foreground 242 "  Each full cycle = ${#FULL_CYCLE_PROFILES[@]} profiles. Merge to main after each batch."
+  gum style --foreground 117 --bold "  Loop: $runs runs × $profiles profiles = $total_cycles total cycles"
+  gum style --foreground 242 "  Merge to main after each run."
   echo ""
 
-  for batch in $(seq 1 "$total_batches"); do
-    gum style --foreground 117 --bold "  ━━━ Batch $batch/$total_batches ($batch_size full cycles) ━━━"
-
-    # Run 5 full cycles
-    cmd_full_cycle "$project_key" "$batch_size"
-
-    # cmd_full_cycle already merges to main at the end
-
-    if [ "$batch" -lt "$total_batches" ]; then
-      echo ""
-      gum style --foreground 114 "  Batch $batch complete. Starting batch $((batch + 1))..."
-      echo ""
-    fi
+  for run in $(seq 1 "$runs"); do
+    gum style --foreground 117 --bold "  ━━━ Run $run/$runs ━━━"
+    cmd_full_cycle "$project_key" 1
+    # cmd_full_cycle merges to main after each run
   done
 
   echo ""
-  gum style --foreground 114 "  Loop complete: $total_batches batches × $batch_size cycles = $total_cycles full cycles"
+  gum style --foreground 114 "  Loop complete: $runs runs ($total_cycles total cycles)"
 }
 
 cmd_run() {
@@ -2278,7 +2267,7 @@ cmd_help() {
   printf "  $(gum style --foreground $c 'autoclaw run') $(gum style --foreground $p '<project> -p security')         Single profile only\n"
   printf "  $(gum style --foreground $c 'autoclaw review') $(gum style --foreground $p '<project> [--codex|--codex-fast]') Deep codebase review + fix\n"
   printf "  $(gum style --foreground $c 'autoclaw build') $(gum style --foreground $p '<project> <plan.md>')        Execute a build plan phase by phase\n"
-  printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> [N]')               N batches of 5 full cycles, merge after each\n"
+  printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> [N]')               N runs (merge to main after each)\n"
   printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> -p security')        Continuous single profile\n"
   printf "  $(gum style --foreground $c 'autoclaw stop') $(gum style --foreground $p '[project]')                    Stop an active run\n"
   echo ""
