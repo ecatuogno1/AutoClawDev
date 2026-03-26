@@ -1413,6 +1413,63 @@ cmd_settings() {
 # ── Run (CLI mode) ───────────────────────────────────────────────────
 FULL_CYCLE_PROFILES=("reliability" "security" "performance" "quality" "issues")
 
+# ── Preflight: check for uncommitted changes ─────────────────────────
+preflight_check_dirty() {
+  local project_key=$1
+  local repo_path
+  repo_path=$(get_project_field "$project_key" "path" 2>/dev/null)
+  [ -z "$repo_path" ] && return 0
+  [ ! -d "$repo_path/.git" ] && return 0
+
+  local dirty
+  dirty=$(git -C "$repo_path" status --porcelain 2>/dev/null | head -5)
+  [ -z "$dirty" ] && return 0
+
+  local count
+  count=$(git -C "$repo_path" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+
+  echo ""
+  gum style --foreground 203 --bold "  WARNING: $count uncommitted change(s) in $project_key"
+  echo ""
+  git -C "$repo_path" status --porcelain 2>/dev/null | head -10 | while read -r line; do
+    printf "    %s\n" "$line"
+  done
+  [ "$count" -gt 10 ] && printf "    ... and %d more\n" "$((count - 10))"
+  echo ""
+
+  if command -v gum >/dev/null 2>&1; then
+    local choice
+    choice=$(gum choose --header "Uncommitted changes will cause worktree errors." \
+      "Commit now (--no-verify) and continue" \
+      "Stash changes and continue" \
+      "Cancel")
+
+    case "$choice" in
+      *"Commit now"*)
+        echo "  Committing all changes..."
+        git -C "$repo_path" add -A
+        git -C "$repo_path" commit --no-verify -m "WIP: auto-commit before autoclaw run" >/dev/null 2>&1
+        gum style --foreground 114 "  Committed. Continuing..."
+        return 0
+        ;;
+      *"Stash"*)
+        echo "  Stashing changes..."
+        git -C "$repo_path" stash push -m "autoclaw-preflight-$(date +%Y%m%d-%H%M%S)" >/dev/null 2>&1
+        gum style --foreground 114 "  Stashed. Run 'git stash pop' in $project_key to restore."
+        return 0
+        ;;
+      *)
+        gum style --foreground 203 "  Cancelled."
+        return 1
+        ;;
+    esac
+  else
+    echo "  ERROR: Uncommitted changes will cause the run to fail."
+    echo "  Commit or stash your changes first, then retry."
+    return 1
+  fi
+}
+
 # Full cycle: run all 5 profiles in sequence, 1 cycle each = 1 complete pass
 cmd_full_cycle() {
   local project_key=$1
@@ -1423,6 +1480,7 @@ cmd_full_cycle() {
     return 1
   fi
 
+  preflight_check_dirty "$project_key" || return 1
   prepare_project_env "$project_key" || return 1
 
   local total=$((passes * ${#FULL_CYCLE_PROFILES[@]}))
@@ -1462,6 +1520,8 @@ cmd_profile_run() {
   local project_key=$2
   local cycles=${3:-5}
   local profile=""
+
+  [ -n "$project_key" ] && { preflight_check_dirty "$project_key" || return 1; }
 
   if ! profile=$(normalize_team_profile "$profile_input"); then
     gum style --foreground 203 "Unknown profile: $profile_input"

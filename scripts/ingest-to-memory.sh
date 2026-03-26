@@ -381,6 +381,124 @@ PYEOF
     ;;
 esac
 
+# ── Reconcile: mark findings as fixed if files were changed ──────────
+
+echo "Reconciling findings against recent commits..."
+
+python3 - "$FINDINGS_FILE" "$PROJECT_PATH" "$TIMESTAMP" <<'PYEOF'
+import sys, json, subprocess, os
+
+findings_file = sys.argv[1]
+project_path = sys.argv[2]
+timestamp = sys.argv[3]
+
+# Read all findings
+rows = []
+try:
+    with open(findings_file) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    pass
+except FileNotFoundError:
+    sys.exit(0)
+
+if not rows:
+    sys.exit(0)
+
+# Get files changed in recent commits (last 20 commits)
+try:
+    result = subprocess.run(
+        ["git", "log", "--pretty=format:%H", "--name-only", "-20"],
+        cwd=project_path, capture_output=True, text=True, timeout=10
+    )
+    if result.returncode != 0:
+        sys.exit(0)
+except Exception:
+    sys.exit(0)
+
+# Parse changed files and their commits
+changed_files = {}  # file -> most recent commit that touched it
+current_commit = ""
+for line in result.stdout.split("\n"):
+    line = line.strip()
+    if not line:
+        continue
+    if len(line) == 40 and all(c in "0123456789abcdef" for c in line):
+        current_commit = line
+    elif current_commit and "/" in line:
+        if line not in changed_files:
+            changed_files[line] = current_commit
+
+# Also check progress.md for explicit fix notes
+progress_path = os.path.join(project_path, ".autoclaw", "reviews", "progress.md")
+fixed_keywords = set()
+if os.path.exists(progress_path):
+    with open(progress_path) as f:
+        in_done = False
+        for line in f:
+            stripped = line.strip()
+            if stripped.startswith("## Done"):
+                in_done = True
+            elif stripped.startswith("## ") and in_done:
+                in_done = False
+            elif in_done and stripped.startswith("- "):
+                # Extract keywords from done items
+                words = stripped.lower().split()
+                for w in words:
+                    if len(w) > 4:
+                        fixed_keywords.add(w.strip("`").strip("*").strip(","))
+
+# Mark findings as fixed if their target files were changed
+fixed_count = 0
+for row in rows:
+    if row.get("status") != "open":
+        continue
+
+    target_files = row.get("target_files", [])
+    title_lower = row.get("title", "").lower()
+
+    # Check 1: target files were modified in recent commits
+    matched_commit = ""
+    for tf in target_files:
+        # Normalize — try with and without leading path
+        for candidate in [tf, tf.lstrip("/")]:
+            if candidate in changed_files:
+                matched_commit = changed_files[candidate]
+                break
+        if matched_commit:
+            break
+
+    # Check 2: progress.md mentions keywords from the finding title
+    title_words = set(w for w in title_lower.split() if len(w) > 4)
+    keyword_overlap = title_words & fixed_keywords
+
+    if matched_commit and len(keyword_overlap) >= 2:
+        # Strong signal: file was changed AND progress mentions related words
+        row["status"] = "fixed"
+        row["resolution_commit"] = matched_commit
+        row["updated_at"] = timestamp
+        fixed_count += 1
+    elif matched_commit and len(target_files) == 1:
+        # Medium signal: single-file finding and that file was changed
+        row["status"] = "fixed"
+        row["resolution_commit"] = matched_commit
+        row["updated_at"] = timestamp
+        fixed_count += 1
+
+# Write back
+if fixed_count > 0:
+    with open(findings_file, "w") as f:
+        for row in rows:
+            f.write(json.dumps(row) + "\n")
+    print(f"Marked {fixed_count} findings as fixed")
+else:
+    print("No findings to reconcile")
+PYEOF
+
 # Update project-memory.json summary
 echo "Updating project memory summary..."
 python3 "$MEMORY_SCRIPT" seed-memory \
