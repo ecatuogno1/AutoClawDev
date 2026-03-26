@@ -17,6 +17,11 @@ interface ChatProps {
   projectKeyLocked?: boolean;
   currentFilePath?: string | null;
   onOpenFile?: (path: string) => void;
+  onAssistantMessage?: (message: {
+    id: string;
+    provider: ChatProvider;
+    text: string;
+  }) => void;
 }
 
 interface StreamEnvelope {
@@ -27,6 +32,7 @@ interface StreamEnvelope {
 export function Chat({
   currentFilePath = null,
   initialProjectKey,
+  onAssistantMessage,
   onOpenFile,
   projectKeyLocked = false,
 }: ChatProps) {
@@ -40,6 +46,7 @@ export function Chat({
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const announcedAssistantIdsRef = useRef(new Set<string>());
   const { data: projects } = useProjects();
 
   useEffect(() => {
@@ -165,6 +172,18 @@ export function Chat({
 
   const referencedFiles = includeCurrentFile && currentFilePath ? [currentFilePath] : [];
 
+  const announceAssistantMessage = useCallback(
+    (message: { id: string; provider: ChatProvider; text: string }) => {
+      if (announcedAssistantIdsRef.current.has(message.id)) {
+        return;
+      }
+
+      announcedAssistantIdsRef.current.add(message.id);
+      onAssistantMessage?.(message);
+    },
+    [onAssistantMessage],
+  );
+
   const handleStreamEnvelope = useCallback((envelope: StreamEnvelope) => {
     const payload = (envelope.data ?? {}) as Record<string, unknown>;
 
@@ -177,9 +196,15 @@ export function Chat({
 
     if (envelope.event === "assistant-delta") {
       if (typeof payload.id === "string" && typeof payload.text === "string") {
+        const nextProvider = (payload.provider as ChatProvider) ?? provider;
+        announceAssistantMessage({
+          id: payload.id,
+          provider: nextProvider,
+          text: payload.text,
+        });
         upsertAssistantMessage({
           id: payload.id,
-          provider: (payload.provider as ChatProvider) ?? provider,
+          provider: nextProvider,
           text: payload.text,
           append: true,
           streaming: true,
@@ -190,9 +215,15 @@ export function Chat({
 
     if (envelope.event === "assistant-message") {
       if (typeof payload.id === "string" && typeof payload.text === "string") {
+        const nextProvider = (payload.provider as ChatProvider) ?? provider;
+        announceAssistantMessage({
+          id: payload.id,
+          provider: nextProvider,
+          text: payload.text,
+        });
         upsertAssistantMessage({
           id: payload.id,
-          provider: (payload.provider as ChatProvider) ?? provider,
+          provider: nextProvider,
           text: payload.text,
           streaming: false,
         });
@@ -221,7 +252,14 @@ export function Chat({
       setStreaming(false);
       setSessionId("");
     }
-  }, [appendItem, markStreamingComplete, provider, upsertAssistantMessage, upsertToolCall]);
+  }, [
+    announceAssistantMessage,
+    appendItem,
+    markStreamingComplete,
+    provider,
+    upsertAssistantMessage,
+    upsertToolCall,
+  ]);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();

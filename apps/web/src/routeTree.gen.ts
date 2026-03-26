@@ -11,7 +11,6 @@
 import { Route as rootRouteImport } from "./routes/__root"
 import { Route as SettingsRouteImport } from "./routes/settings"
 import { Route as LiveRouteImport } from "./routes/live"
-import { Route as ChatRouteImport } from "./routes/chat"
 import { Route as IndexRouteImport } from "./routes/index"
 import { Route as ProjectsIndexRouteImport } from "./routes/projects/index"
 import { Route as ExperimentsIndexRouteImport } from "./routes/experiments/index"
@@ -29,11 +28,6 @@ const SettingsRoute = SettingsRouteImport.update({
 const LiveRoute = LiveRouteImport.update({
   id: "/live",
   path: "/live",
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ChatRoute = ChatRouteImport.update({
-  id: "/chat",
-  path: "/chat",
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -82,7 +76,6 @@ const ProjectsProjectKeyMemoryRoute =
 
 export interface FileRoutesByFullPath {
   "/": typeof IndexRoute
-  "/chat": typeof ChatRoute
   "/live": typeof LiveRoute
   "/settings": typeof SettingsRoute
   "/projects/$projectKey": typeof ProjectsProjectKeyRouteWithChildren
@@ -95,7 +88,6 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   "/": typeof IndexRoute
-  "/chat": typeof ChatRoute
   "/live": typeof LiveRoute
   "/settings": typeof SettingsRoute
   "/experiments": typeof ExperimentsIndexRoute
@@ -108,7 +100,6 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   "/": typeof IndexRoute
-  "/chat": typeof ChatRoute
   "/live": typeof LiveRoute
   "/settings": typeof SettingsRoute
   "/projects/$projectKey": typeof ProjectsProjectKeyRouteWithChildren
@@ -123,7 +114,6 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | "/"
-    | "/chat"
     | "/live"
     | "/settings"
     | "/projects/$projectKey"
@@ -136,7 +126,6 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | "/"
-    | "/chat"
     | "/live"
     | "/settings"
     | "/experiments"
@@ -148,7 +137,6 @@ export interface FileRouteTypes {
   id:
     | "__root__"
     | "/"
-    | "/chat"
     | "/live"
     | "/settings"
     | "/projects/$projectKey"
@@ -162,7 +150,6 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  ChatRoute: typeof ChatRoute
   LiveRoute: typeof LiveRoute
   SettingsRoute: typeof SettingsRoute
   ProjectsProjectKeyRoute: typeof ProjectsProjectKeyRouteWithChildren
@@ -184,13 +171,6 @@ declare module "@tanstack/react-router" {
       path: "/live"
       fullPath: "/live"
       preLoaderRoute: typeof LiveRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    "/chat": {
-      id: "/chat"
-      path: "/chat"
-      fullPath: "/chat"
-      preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
     "/": {
@@ -271,7 +251,6 @@ const ProjectsProjectKeyRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  ChatRoute: ChatRoute,
   LiveRoute: LiveRoute,
   SettingsRoute: SettingsRoute,
   ProjectsProjectKeyRoute: ProjectsProjectKeyRouteWithChildren,

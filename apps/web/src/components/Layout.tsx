@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouterState } from "@tanstack/react-router";
 import ActivityBar from "@/components/ActivityBar";
 import { AppSidebar } from "@/components/AppSidebar";
+import { FloatingChat } from "@/components/FloatingChat";
 import { type ActivityPanelId } from "@/components/activityPanels";
 import {
   deriveLayoutNavState,
@@ -62,6 +63,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           <main className="min-h-0 flex-1 overflow-auto bg-[#0d1117]">{children}</main>
         </div>
       </SidebarProvider>
+      <FloatingChat activeProjectKey={navState.activeProjectKey} />
     </div>
   );
 }
