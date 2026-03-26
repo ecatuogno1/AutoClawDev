@@ -4,13 +4,14 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { homedir } from "node:os";
+import type { ChatProvider, ToolCallState } from "@autoclawdev/types";
 import { getProject } from "../lib/config.js";
 
 const router: ExpressRouter = Router();
 
 interface ActiveSession {
   process: ChildProcess;
-  provider: string;
+  provider: ChatProvider;
   startedAt: string;
 }
 
@@ -18,31 +19,11 @@ interface PendingApprovalRecord {
   requestId: string;
   createdAt: string;
   cwd: string;
-  provider: string;
+  provider: ChatProvider;
   requestKind: "command" | "file-read" | "file-change";
   toolName: string;
   input: Record<string, unknown>;
   projectKey?: string;
-}
-
-interface ToolCallState {
-  id: string;
-  provider: string;
-  kind: "file-read" | "file-edit" | "file-write" | "bash-command" | "search" | "tool";
-  title: string;
-  status: "running" | "completed" | "pending-approval" | "failed";
-  path?: string;
-  absolutePath?: string;
-  command?: string;
-  query?: string;
-  detail?: string;
-  content?: string;
-  output?: string;
-  oldContent?: string;
-  newContent?: string;
-  exitCode?: number | null;
-  requestId?: string;
-  error?: string;
 }
 
 const activeSessions = new Map<string, ActiveSession>();
@@ -299,7 +280,7 @@ async function handleStreamLine(props: {
   cwd: string;
   line: string;
   projectKey?: string;
-  provider: "claude" | "codex";
+  provider: ChatProvider;
   send: (event: string, data: unknown) => void;
   toolCalls: Map<string, ToolCallState>;
   streamedAssistantMessageIds: Set<string>;
@@ -588,7 +569,7 @@ async function buildClaudeToolResultState(
   cwd: string,
   existing: ToolCallState,
   block: Record<string, unknown>,
-  meta: { provider: string; projectKey?: string },
+  meta: { provider: ChatProvider; projectKey?: string },
   eventToolUseResult: Record<string, unknown> | null,
 ) {
   const nextState: ToolCallState = { ...existing };

@@ -1,4 +1,4 @@
-import type { SSEEvent } from "@/types";
+import type { SSEEvent } from "@autoclawdev/types";
 
 export type RunStatus = NonNullable<SSEEvent["data"]["status"]>;
 export type RunOutputKind = NonNullable<SSEEvent["data"]["kind"]>;

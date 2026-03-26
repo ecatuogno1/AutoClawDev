@@ -1,24 +1,12 @@
 import { Router, type Router as ExpressRouter } from "express";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { ProjectHealth } from "@autoclawdev/types";
 import { listProjects } from "../lib/config.js";
 import { getExperiments } from "../lib/experiments.js";
 import { getWorkspacePath, resolveReviewsDir, resolveMemoryDir, resolveLockPath } from "../lib/paths.js";
 
 const router: ExpressRouter = Router();
-
-export interface ProjectHealth {
-  key: string;
-  name: string;
-  passRate: number;
-  totalExperiments: number;
-  recentTrend: "improving" | "declining" | "stable" | "unknown";
-  lastRun?: string;
-  lastDeepReview?: string;
-  hasMemory: boolean;
-  profiles: Record<string, "pass" | "fail" | "unknown">;
-  activeRun: boolean;
-}
 
 async function fileExists(path: string): Promise<boolean> {
   try {

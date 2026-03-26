@@ -1,31 +1,11 @@
 import { Router, type Router as ExpressRouter } from "express";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import type { DeepReviewDetail, DeepReviewSession } from "@autoclawdev/types";
 import { getProject } from "../lib/config.js";
 import { resolveReviewsDir } from "../lib/paths.js";
 
 const router: ExpressRouter = Router();
-
-export interface DeepReviewSession {
-  provider: string;
-  sessionName: string;
-  startedAt: string;
-  endedAt?: string;
-  exitCode?: number;
-  model: string;
-  projectPath: string;
-  ttyLog: string;
-  jsonLog?: string;
-  hasAuditReport: boolean;
-  hasExecutionPlan: boolean;
-  hasProgress: boolean;
-}
-
-export interface DeepReviewDetail extends DeepReviewSession {
-  auditReport?: string;
-  executionPlan?: string;
-  progress?: string;
-}
 
 async function fileExists(path: string): Promise<boolean> {
   try {

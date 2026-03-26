@@ -9,6 +9,7 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@autoclawdev/types": "workspace:*",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "ws": "^8.20.0"

@@ -1,6 +1,6 @@
 import { ChevronDown, ChevronRight, FileDiff, LoaderCircle } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import type { WorkspaceGitFileStatus } from "@/types";
+import type { WorkspaceGitFileStatus } from "@autoclawdev/types";
 import { cn } from "@/lib/cn";
 
 interface DiffViewerProps {

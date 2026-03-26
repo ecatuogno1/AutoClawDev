@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useProjectMemory } from "@/lib/api";
-import type { MemoryFinding } from "@/types";
+import type { MemoryFinding } from "@autoclawdev/types";
 import { useState, useMemo } from "react";
 
 export const Route = createFileRoute("/projects/$projectKey/memory")({

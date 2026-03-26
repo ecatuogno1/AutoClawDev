@@ -4,6 +4,16 @@ import { basename, dirname, extname, join, relative } from "node:path";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
+import type {
+  WorkspaceDirectoryListing,
+  WorkspaceFileContent,
+  WorkspaceFileEntry,
+  WorkspaceGitCommitResponse,
+  WorkspaceGitDiffResponse,
+  WorkspaceGitFileStatus,
+  WorkspaceGitStageResponse,
+  WorkspaceGitStatus,
+} from "@autoclawdev/types";
 import { getProject } from "../lib/config.js";
 
 const router: ExpressRouter = Router();
@@ -52,19 +62,7 @@ function runGitCommand(args: string[], cwd: string) {
   });
 }
 
-interface ParsedGitFileStatus {
-  status: string;
-  path: string;
-  originalPath: string | null;
-  staged: boolean;
-  unstaged: boolean;
-  untracked: boolean;
-  indexStatus: string;
-  workingTreeStatus: string;
-  label: string;
-}
-
-function parseGitStatusLine(line: string): ParsedGitFileStatus {
+function parseGitStatusLine(line: string): WorkspaceGitFileStatus {
   const indexStatus = line[0] ?? " ";
   const workingTreeStatus = line[1] ?? " ";
   const rawPath = line.slice(3).trim();
@@ -150,7 +148,7 @@ function extractGitCommandOutput(error: unknown) {
   return typeof maybeStdout === "string" ? maybeStdout : null;
 }
 
-function getGitStatusSnapshot(cwd: string) {
+function getGitStatusSnapshot(cwd: string): WorkspaceGitStatus {
   const statusOutput = runGitCommand(["status", "--porcelain"], cwd);
   const files = statusOutput
     .split("\n")
@@ -183,14 +181,6 @@ function getGitStatusSnapshot(cwd: string) {
 
 // ── File listing ─────────────────────────────────────────────────────
 
-interface FileEntry {
-  name: string;
-  path: string;
-  type: "file" | "directory";
-  size?: number;
-  language?: string;
-}
-
 router.get("/files", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
   const dirPath = req.query.path as string | undefined;
@@ -211,7 +201,7 @@ router.get("/files", async (req: Request, res: Response) => {
 
   try {
     const entries = await readdir(resolved, { withFileTypes: true });
-    const files: FileEntry[] = [];
+    const files: WorkspaceFileEntry[] = [];
 
     const skip = new Set([
       "node_modules", ".git", ".next", "dist", "build", ".output",
@@ -244,7 +234,11 @@ router.get("/files", async (req: Request, res: Response) => {
       return a.name.localeCompare(b.name);
     });
 
-    return res.json({ path: relative(basePath, resolved) || ".", entries: files });
+    const listing: WorkspaceDirectoryListing = {
+      path: relative(basePath, resolved) || ".",
+      entries: files,
+    };
+    return res.json(listing);
   } catch (err) {
     return res.status(500).json({ error: (err as Error).message });
   }
@@ -276,13 +270,14 @@ router.get("/file", async (req: Request, res: Response) => {
     }
 
     const content = await readFile(resolved, "utf-8");
-    return res.json({
+    const file: WorkspaceFileContent = {
       path: filePath,
       name: basename(resolved),
       content,
       language: getLanguage(basename(resolved)),
       size: s.size,
-    });
+    };
+    return res.json(file);
   } catch (err) {
     return res.status(500).json({ error: (err as Error).message });
   }
@@ -323,7 +318,7 @@ router.get("/git/status", async (req: Request, res: Response) => {
   try {
     return res.json(getGitStatusSnapshot(cwd));
   } catch {
-    return res.json({
+    const status: WorkspaceGitStatus = {
       branch: "unknown",
       lastCommit: "",
       files: [],
@@ -338,7 +333,8 @@ router.get("/git/status", async (req: Request, res: Response) => {
       },
       clean: true,
       error: "Not a git repo",
-    });
+    };
+    return res.json(status);
   }
 });
 
@@ -353,25 +349,29 @@ router.get("/git/diff", async (req: Request, res: Response) => {
   try {
     if (!filePath) {
       const diff = buildDiffForTrackedFile(cwd, ".");
-      return res.json({ diff, file: null });
+      const response: WorkspaceGitDiffResponse = { diff, file: null };
+      return res.json(response);
     }
 
     const snapshot = getGitStatusSnapshot(cwd);
     const fileStatus = snapshot.files.find((entry) => entry.path === filePath);
     if (!fileStatus) {
-      return res.json({ diff: "", file: null });
+      const response: WorkspaceGitDiffResponse = { diff: "", file: null };
+      return res.json(response);
     }
 
     const diff = fileStatus.untracked
       ? buildDiffForUntrackedFile(cwd, filePath)
       : buildDiffForTrackedFile(cwd, filePath);
 
-    return res.json({
+    const response: WorkspaceGitDiffResponse = {
       diff,
       file: fileStatus,
-    });
+    };
+    return res.json(response);
   } catch {
-    return res.json({ diff: "", file: null });
+    const response: WorkspaceGitDiffResponse = { diff: "", file: null };
+    return res.json(response);
   }
 });
 
@@ -410,11 +410,12 @@ router.post("/git/stage", async (req: Request, res: Response) => {
       return res.status(400).json({ error: "paths or all is required" });
     }
 
-    return res.json({
+    const response: WorkspaceGitStageResponse = {
       ok: true,
       mode: action,
       status: getGitStatusSnapshot(cwd),
-    });
+    };
+    return res.json(response);
   } catch (error) {
     return res.status(500).json({
       error: error instanceof Error ? error.message : "Unable to update staged files",
@@ -449,13 +450,14 @@ router.post("/git/commit", async (req: Request, res: Response) => {
 
     runGitCommand(["commit", "-m", commitMessage], cwd);
 
-    return res.json({
+    const response: WorkspaceGitCommitResponse = {
       ok: true,
       branch: runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], cwd).trim(),
       commit: runGitCommand(["rev-parse", "--short", "HEAD"], cwd).trim(),
       lastCommit: runGitCommand(["log", "--oneline", "-1"], cwd).trim(),
       status: getGitStatusSnapshot(cwd),
-    });
+    };
+    return res.json(response);
   } catch (error) {
     return res.status(500).json({
       error: error instanceof Error ? error.message : "Unable to create commit",

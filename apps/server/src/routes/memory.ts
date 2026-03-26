@@ -1,6 +1,7 @@
 import { Router, type Router as ExpressRouter } from "express";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import type { MemoryFinding, ProjectMemory } from "@autoclawdev/types";
 import { getWorkspacePath, resolveMemoryDir } from "../lib/paths.js";
 import { getProject } from "../lib/config.js";
 
@@ -51,15 +52,18 @@ router.get("/:key/memory", async (req, res) => {
   const fileMemory = await safeReadJsonl(join(memDir, "file-memory.jsonl"));
 
   // Parse project-memory.json into structured fields
-  const summary = projectMemory?.summary || null;
-  const updatedAt = projectMemory?.updated_at || null;
-  const sourceCommit = projectMemory?.source_commit || null;
-  const hotspots: Array<{ path: string; count: number }> = Array.isArray(projectMemory?.hotspots)
+  const summary =
+    typeof projectMemory?.summary === "string" ? projectMemory.summary : null;
+  const updatedAt =
+    typeof projectMemory?.updated_at === "string" ? projectMemory.updated_at : null;
+  const sourceCommit =
+    typeof projectMemory?.source_commit === "string" ? projectMemory.source_commit : null;
+  const hotspots: ProjectMemory["hotspots"] = Array.isArray(projectMemory?.hotspots)
     ? projectMemory.hotspots
     : [];
 
   // Parse findings into structured format
-  const findings = findingMemory.map((f: Record<string, unknown>) => ({
+  const findings: MemoryFinding[] = findingMemory.map((f: Record<string, unknown>) => ({
     title: (f.title || f.finding || f.description || "") as string,
     directive: (f.directive || "unknown") as string,
     domain: (f.domain || "unknown") as string,
@@ -75,7 +79,7 @@ router.get("/:key/memory", async (req, res) => {
   const openFindings = findings.filter((f) => f.status === "open");
   const resolvedFindings = findings.filter((f) => f.status !== "open");
 
-  return res.json({
+  const memory: ProjectMemory = {
     project: req.params.key,
     summary,
     updatedAt,
@@ -85,7 +89,9 @@ router.get("/:key/memory", async (req, res) => {
     resolvedFindings,
     fileMemoryCount: fileMemory.length,
     totalFindings: findings.length,
-  });
+  };
+
+  return res.json(memory);
 });
 
 // GET /api/memory/overview — cross-project memory summary

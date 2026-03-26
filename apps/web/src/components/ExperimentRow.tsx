@@ -1,5 +1,5 @@
 import { AgentBadge } from "./AgentBadge";
-import type { Experiment } from "@/types";
+import type { Experiment } from "@autoclawdev/types";
 
 interface ExperimentRowProps {
   experiment: Experiment;

@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import type { ProjectWithStats } from "@/types";
+import type { ProjectWithStats } from "@autoclawdev/types";
 
 interface ProjectCardProps {
   project: ProjectWithStats;

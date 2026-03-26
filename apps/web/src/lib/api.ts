@@ -1,22 +1,22 @@
 import { useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
-  ProjectWithStats,
-  ProjectDetail,
-  Experiment,
-  GithubData,
   ActiveRun,
-  ProjectHealth,
-  DeepReviewSession,
   DeepReviewDetail,
+  DeepReviewSession,
+  Experiment,
+  ProjectDetail,
+  ProjectHealth,
   ProjectMemory,
+  ProjectWithStats,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
   WorkspaceGitCommitResponse,
   WorkspaceGitDiffResponse,
   WorkspaceGitStageResponse,
   WorkspaceGitStatus,
-} from "@/types";
+} from "@autoclawdev/types";
+import type { GithubData } from "@/types";
 
 const BASE = "/api";
 

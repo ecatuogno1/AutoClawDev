@@ -1,6 +1,6 @@
 import { LoaderCircle, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { WorkspaceGitFileStatus } from "@/types";
+import type { WorkspaceGitFileStatus } from "@autoclawdev/types";
 import { cn } from "@/lib/cn";
 
 interface CommitDialogProps {

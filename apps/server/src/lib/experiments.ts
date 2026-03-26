@@ -1,26 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import type { Experiment } from "@autoclawdev/types";
 import { getWorkspaceDir, getWorkspacePath, getProjectExperimentsPath } from "./paths.js";
 import { getProject } from "./config.js";
-
-export type ExperimentResult = "pass" | "fail";
-export type ExperimentDomain = "backend" | "frontend" | "unknown";
-
-export interface Experiment {
-  id: string;
-  timestamp: string;
-  directive: string;
-  description: string;
-  result: ExperimentResult;
-  metrics_before?: Record<string, number>;
-  metrics_after?: Record<string, number>;
-  commit?: string;
-  elapsed?: number;
-  tools?: string[];
-  project?: string;
-  domain?: ExperimentDomain;
-  gh_issue?: string | number;
-}
 
 const AUTORESEARCH_DIR = getWorkspaceDir();
 

@@ -7,7 +7,7 @@ import {
   useWorkspaceGitStatus,
 } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import type { WorkspaceGitFileStatus } from "@/types";
+import type { WorkspaceGitFileStatus } from "@autoclawdev/types";
 import { CommitDialog } from "./CommitDialog";
 import { DiffViewer } from "./DiffViewer";
 

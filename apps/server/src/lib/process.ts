@@ -14,8 +14,13 @@ import {
 import { join, dirname } from "node:path";
 import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
+import type {
+  ActiveRun as SharedActiveRun,
+  ProjectConfig,
+  RunOutputEvent,
+} from "@autoclawdev/types";
 import { getWorkspaceDir, getWorkspacePath } from "./paths.js";
-import { getProject, type ProjectConfig } from "./config.js";
+import { getProject } from "./config.js";
 
 const WORKSPACE_DIR = getWorkspaceDir();
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -28,7 +33,7 @@ const RUNNER_SCRIPT = process.env.AUTOCLAWDEV_RUNNER || (
 );
 const RUN_LOG = getWorkspacePath("run.log");
 
-interface ActiveRun {
+interface ActiveRun extends SharedActiveRun {
   project: string;
   cycles: number;
   startedAt: string;
@@ -46,17 +51,6 @@ interface ExternalRunObserver {
   logPath: string;
   offset: number;
   buffer: string;
-}
-
-export interface RunOutputEvent {
-  project: string;
-  text: string;
-  timestamp: string;
-  kind?: "line" | "phase_start" | "phase_done" | "phase_detail" | "session_start" | "session_end" | "session_line" | "cycle";
-  agent?: string;
-  tool?: string;
-  status?: "working" | "done" | "fail";
-  session?: string;
 }
 
 export function parseRunnerLine(project: string, line: string): RunOutputEvent {
@@ -181,11 +175,7 @@ function resolveExternalRunCycles(pid: number): number {
   return 1;
 }
 
-function getExternalActiveRuns(): Array<{
-  project: string;
-  cycles: number;
-  startedAt: string;
-}> {
+function getExternalActiveRuns(): SharedActiveRun[] {
   return listExternalRunMetadata().map(({ project, cycles, startedAt }) => ({
     project,
     cycles,
@@ -478,11 +468,7 @@ export function stopRun(project: string): boolean {
   return true;
 }
 
-export function getActiveRuns(): Array<{
-  project: string;
-  cycles: number;
-  startedAt: string;
-}> {
+export function getActiveRuns(): SharedActiveRun[] {
   const serverRuns = Array.from(activeRuns.values()).map(({ project, cycles, startedAt }) => ({
     project,
     cycles,
