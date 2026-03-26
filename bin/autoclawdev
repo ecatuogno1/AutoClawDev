@@ -544,40 +544,714 @@ cmd_dashboard() {
 }
 
 # ── Interactive Main Menu ────────────────────────────────────────────
+tui_init_theme() {
+  TUI_RESET="$(tput sgr0 2>/dev/null || true)"
+  TUI_BOLD="$(tput bold 2>/dev/null || true)"
+  TUI_DIM="$(tput dim 2>/dev/null || true)"
+  TUI_GREEN="$(tput setaf 2 2>/dev/null || true)"
+  TUI_YELLOW="$(tput setaf 3 2>/dev/null || true)"
+  TUI_BLUE="$(tput setaf 4 2>/dev/null || true)"
+  TUI_MAGENTA="$(tput setaf 5 2>/dev/null || true)"
+  TUI_CYAN="$(tput setaf 6 2>/dev/null || true)"
+  TUI_WHITE="$(tput setaf 7 2>/dev/null || true)"
+  TUI_RED="$(tput setaf 1 2>/dev/null || true)"
+}
+
+tui_resume_terminal() {
+  tput smcup 2>/dev/null || true
+  tput civis 2>/dev/null || true
+  tput sgr0 2>/dev/null || true
+}
+
+tui_suspend_terminal() {
+  tput sgr0 2>/dev/null || true
+  tput cnorm 2>/dev/null || true
+  tput rmcup 2>/dev/null || true
+}
+
+tui_restore_terminal() {
+  tput sgr0 2>/dev/null || true
+  tput cnorm 2>/dev/null || true
+  tput rmcup 2>/dev/null || true
+  tput reset 2>/dev/null || true
+}
+
+tui_repeat_char() {
+  local char=$1
+  local count=${2:-0}
+  local out=""
+  local i=0
+  while [ "$i" -lt "$count" ]; do
+    out="${out}${char}"
+    i=$((i + 1))
+  done
+  printf "%s" "$out"
+}
+
+tui_strip_ansi() {
+  printf "%s" "$1" | sed -E $'s/\r//g; s/\x1B\\[[0-9;?]*[ -/]*[@-~]//g; s/\x1B[()][0-9A-Za-z]//g; s/\x1B[@-_]//g'
+}
+
+tui_fit_content() {
+  local text=${1:-}
+  local width=${2:-0}
+  local plain=""
+  local pad=0
+
+  [ "$width" -le 0 ] && return 0
+
+  plain=$(tui_strip_ansi "$text")
+  if [ "${#plain}" -gt "$width" ]; then
+    if [ "$width" -eq 1 ]; then
+      printf "%s" "${plain:0:1}"
+    else
+      printf "%s…" "${plain:0:$((width - 1))}"
+    fi
+    return 0
+  fi
+
+  pad=$((width - ${#plain}))
+  printf "%s%*s" "$text" "$pad" ""
+}
+
+tui_rate_color() {
+  local rate=${1:-0}
+  if [ "$rate" -ge 80 ] 2>/dev/null; then
+    printf "%s" "$TUI_GREEN"
+  elif [ "$rate" -ge 50 ] 2>/dev/null; then
+    printf "%s" "$TUI_YELLOW"
+  elif [ "$rate" -gt 0 ] 2>/dev/null; then
+    printf "%s" "$TUI_RED"
+  else
+    printf "%s%s" "$TUI_DIM" "$TUI_WHITE"
+  fi
+}
+
+tui_trend_icon() {
+  case "${1:-unknown}" in
+    improving) printf "↑" ;;
+    declining) printf "↓" ;;
+    stable)    printf "→" ;;
+    *)         printf "·" ;;
+  esac
+}
+
+tui_trend_color() {
+  case "${1:-unknown}" in
+    improving) printf "%s" "$TUI_GREEN" ;;
+    declining) printf "%s" "$TUI_RED" ;;
+    stable)    printf "%s" "$TUI_CYAN" ;;
+    *)         printf "%s%s" "$TUI_DIM" "$TUI_WHITE" ;;
+  esac
+}
+
+tui_box_top() {
+  local title=$1
+  local width=$2
+  local inner=$((width - 2))
+  local max_title=$((inner - 4))
+  local label filler_count filler
+
+  [ "$inner" -lt 1 ] && { printf "%s" "$(tui_repeat_char "─" "$width")"; return; }
+  [ "$max_title" -lt 1 ] && max_title=1
+  title=$(tui_fit_content "$title" "$max_title")
+  label="── $(tui_strip_ansi "$title") "
+  filler_count=$((inner - ${#label}))
+  [ "$filler_count" -lt 0 ] && filler_count=0
+  filler=$(tui_repeat_char "─" "$filler_count")
+  printf "╭%s%s╮" "$label" "$filler"
+}
+
+tui_box_rule() {
+  local title=$1
+  local width=$2
+  local inner=$((width - 2))
+  local max_title=$((inner - 4))
+  local label filler_count filler
+
+  [ "$inner" -lt 1 ] && { printf "%s" "$(tui_repeat_char "─" "$width")"; return; }
+  [ "$max_title" -lt 1 ] && max_title=1
+  title=$(tui_fit_content "$title" "$max_title")
+  label="── $(tui_strip_ansi "$title") "
+  filler_count=$((inner - ${#label}))
+  [ "$filler_count" -lt 0 ] && filler_count=0
+  filler=$(tui_repeat_char "─" "$filler_count")
+  printf "├%s%s┤" "$label" "$filler"
+}
+
+tui_box_line() {
+  local text=$1
+  local width=$2
+  local inner=$((width - 2))
+  printf "│%s│" "$(tui_fit_content "$text" "$inner")"
+}
+
+tui_box_bottom() {
+  local width=$1
+  printf "╰%s╯" "$(tui_repeat_char "─" $((width - 2)))"
+}
+
+get_project_tui_stats() {
+  local key=$1
+  local expfile="$WORKSPACE/experiments-${key}.jsonl"
+  local findings_file="$WORKSPACE/memory/${key}/finding-memory.jsonl"
+
+  python3 - "$expfile" "$findings_file" <<'PY'
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+expfile, findings_file = sys.argv[1:3]
+
+def repair_line(line: str) -> str | None:
+    description_marker = '"description":"'
+    result_marker = '","result":"'
+    description_index = line.find(description_marker)
+    if description_index < 0:
+        return None
+
+    description_start = description_index + len(description_marker)
+    result_index = line.find(result_marker, description_start)
+    if result_index < 0:
+        return None
+
+    raw_description = line[description_start:result_index]
+    repaired_description = json.dumps(raw_description)[1:-1]
+    return f"{line[:description_start]}{repaired_description}{line[result_index:]}"
+
+def parse_jsonl(path: str):
+    rows = []
+    if not os.path.exists(path):
+        return rows
+    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line:
+                continue
+            for candidate in (line, repair_line(line)):
+                if not candidate:
+                    continue
+                try:
+                    rows.append(json.loads(candidate))
+                    break
+                except Exception:
+                    continue
+    return rows
+
+def parse_timestamp(value: str | None):
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def time_ago(value: str | None) -> str:
+    dt = parse_timestamp(value)
+    if not dt:
+        return "never"
+    now = datetime.now(timezone.utc)
+    diff = max(0, int((now - dt).total_seconds()))
+    minutes = diff // 60
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    if days < 7:
+        return f"{days}d ago"
+    weeks = days // 7
+    return f"{weeks}w ago"
+
+def compute_trend(rows):
+    if len(rows) < 4:
+        return "unknown"
+    recent = rows[:5]
+    older = rows[5:10]
+    if not older:
+        return "unknown"
+    recent_rate = sum(1 for row in recent if row.get("result") == "pass") / len(recent)
+    older_rate = sum(1 for row in older if row.get("result") == "pass") / len(older)
+    if recent_rate > older_rate + 0.1:
+        return "improving"
+    if recent_rate < older_rate - 0.1:
+        return "declining"
+    return "stable"
+
+experiments = parse_jsonl(expfile)
+experiments.sort(key=lambda row: row.get("timestamp", ""), reverse=True)
+total = len(experiments)
+passed = sum(1 for row in experiments if row.get("result") == "pass")
+failed = total - passed
+rate = int((passed * 100 / total) if total else 0)
+trend = compute_trend(experiments)
+last_run = time_ago(experiments[0].get("timestamp") if experiments else None)
+
+open_findings = 0
+for row in parse_jsonl(findings_file):
+    if row.get("status") == "open":
+        open_findings += 1
+
+print(f"{total}\t{passed}\t{failed}\t{rate}\t{trend}\t{last_run}\t{open_findings}")
+PY
+}
+
+tui_pick_log_source() {
+  local selected_key=${1:-}
+
+  if [ -n "$selected_key" ] && [ "$(is_running "$selected_key")" = "yes" ]; then
+    printf "%s\t%s\trunning\n" "$selected_key" "$WORKSPACE/run-${selected_key}.log"
+    return
+  fi
+
+  local newest_key=""
+  local newest_file=""
+  local newest_mtime=0
+
+  for key in $(get_projects); do
+    [ "$(is_running "$key")" = "yes" ] || continue
+    local logfile="$WORKSPACE/run-${key}.log"
+    [ -f "$logfile" ] || logfile="$WORKSPACE/run.log"
+    local mtime
+    mtime=$(stat -f %m "$logfile" 2>/dev/null || echo 0)
+    if [ "$mtime" -ge "$newest_mtime" ] 2>/dev/null; then
+      newest_key="$key"
+      newest_file="$logfile"
+      newest_mtime="$mtime"
+    fi
+  done
+
+  if [ -n "$newest_file" ]; then
+    printf "%s\t%s\trunning\n" "$newest_key" "$newest_file"
+    return
+  fi
+
+  local latest_file=""
+  latest_file=$(ls -t "$WORKSPACE"/run-*.log 2>/dev/null | head -1)
+  if [ -z "$latest_file" ] && [ -f "$WORKSPACE/run.log" ]; then
+    latest_file="$WORKSPACE/run.log"
+  fi
+
+  if [ -n "$latest_file" ]; then
+    local latest_key="${latest_file##*/run-}"
+    latest_key="${latest_key%.log}"
+    [ "$latest_file" = "$WORKSPACE/run.log" ] && latest_key="latest"
+    printf "%s\t%s\tlatest\n" "$latest_key" "$latest_file"
+    return
+  fi
+
+  printf "\t\tidle\n"
+}
+
+tui_load_log_lines() {
+  local logfile=$1
+  local limit=${2:-20}
+
+  if [ ! -f "$logfile" ]; then
+    return
+  fi
+
+  while IFS= read -r line; do
+    TUI_RIGHT_LINES+=("$(tui_strip_ansi "$line")")
+  done < <(tail -n "$limit" "$logfile" 2>/dev/null)
+}
+
+tui_render_shell() {
+  local selected_index=${1:-0}
+  local selected_key=${2:-}
+  local projects=($(get_projects))
+  local cols rows left_width right_width content_rows left_lines_per_project
+  local left_inner right_inner
+  local actions_reserved=4
+  local i=0
+  local key=""
+
+  rows=$(tput lines 2>/dev/null || echo 24)
+  cols=$(tput cols 2>/dev/null || echo 120)
+  [ "$rows" -lt 12 ] && rows=12
+  [ "$cols" -lt 60 ] && cols=60
+
+  left_width=$((cols / 2))
+  right_width=$((cols - left_width))
+  left_inner=$((left_width - 2))
+  right_inner=$((right_width - 2))
+  content_rows=$((rows - 2))
+
+  TUI_LEFT_LINES=()
+  TUI_RIGHT_LINES=()
+
+  left_lines_per_project=2
+  if [ $(( ${#projects[@]} * left_lines_per_project + actions_reserved )) -gt "$content_rows" ]; then
+    left_lines_per_project=1
+  fi
+
+  for ((i = 0; i < ${#projects[@]}; i++)); do
+    key="${projects[$i]}"
+    local name running status_dot selector idx_label
+    local stats total passed failed rate trend last_run open_findings
+    local rate_color trend_color trend_icon
+    local name_room name_text line1 line2
+
+    name=$(get_project_name "$key")
+    running=$(is_running "$key")
+    stats=$(get_project_tui_stats "$key")
+    IFS=$'\t' read -r total passed failed rate trend last_run open_findings <<EOF
+$stats
+EOF
+
+    selector=" "
+    [ "$i" -eq "$selected_index" ] && selector="${TUI_CYAN}${TUI_BOLD}›${TUI_RESET}"
+    idx_label=$((i + 1))
+    if [ "$total" -gt 0 ] 2>/dev/null || [ "$running" = "yes" ]; then
+      status_dot="${TUI_GREEN}●${TUI_RESET}"
+    else
+      status_dot="${TUI_DIM}${TUI_WHITE}○${TUI_RESET}"
+    fi
+
+    rate_color=$(tui_rate_color "$rate")
+    trend_color=$(tui_trend_color "$trend")
+    trend_icon=$(tui_trend_icon "$trend")
+
+    if [ "$left_lines_per_project" -eq 1 ]; then
+      name_room=$((left_inner - 30))
+      [ "$name_room" -lt 10 ] && name_room=10
+      name_text=$(tui_fit_content "$name" "$name_room")
+      line1="${selector}${idx_label} ${status_dot} ${name_text} ${rate_color}${rate}%${TUI_RESET} ${trend_color}${trend_icon}${TUI_RESET}"
+      line1="${line1} ${TUI_DIM}${open_findings} open${TUI_RESET}"
+      [ "$running" = "yes" ] && line1="${line1} ${TUI_GREEN}[RUNNING]${TUI_RESET}"
+      TUI_LEFT_LINES+=("$line1")
+    else
+      name_room=$((left_inner - 18))
+      [ "$name_room" -lt 10 ] && name_room=10
+      name_text=$(tui_fit_content "$name" "$name_room")
+      line1="${selector}${idx_label} ${status_dot} ${name_text} ${rate_color}${rate}%${TUI_RESET} ${trend_color}${trend_icon}${TUI_RESET}"
+      line2="   ${TUI_DIM}${open_findings} open findings · ${last_run}${TUI_RESET}"
+      [ "$running" = "yes" ] && line2="${line2} ${TUI_GREEN}[RUNNING]${TUI_RESET}"
+      TUI_LEFT_LINES+=("$line1")
+      TUI_LEFT_LINES+=("$line2")
+    fi
+  done
+
+  while [ ${#TUI_LEFT_LINES[@]} -lt $((content_rows - actions_reserved)) ]; do
+    TUI_LEFT_LINES+=("")
+  done
+
+  TUI_LEFT_LINES+=("__RULE__Actions")
+  TUI_LEFT_LINES+=("  [R] Run   [L] Loop   [V] Review")
+  TUI_LEFT_LINES+=("  [B] Build [S] Stop   [Q] Quit")
+  TUI_LEFT_LINES+=("  [1-9] Select  [↑/↓] Move  [Enter] Details")
+
+  local log_source log_key logfile log_mode
+  local status_line log_limit
+  log_source=$(tui_pick_log_source "$selected_key")
+  IFS=$'\t' read -r log_key logfile log_mode <<EOF
+$log_source
+EOF
+
+  if [ "$log_mode" = "running" ]; then
+    status_line="${TUI_GREEN}${TUI_BOLD}Running:${TUI_RESET} ${log_key}"
+  elif [ "$log_mode" = "latest" ] && [ -n "$logfile" ]; then
+    status_line="${TUI_DIM}No active runs - latest log:${TUI_RESET} ${log_key}"
+  else
+    status_line="${TUI_DIM}No active runs - press R to start${TUI_RESET}"
+  fi
+  TUI_RIGHT_LINES+=("$status_line")
+  TUI_RIGHT_LINES+=("")
+
+  log_limit=$((content_rows - 2))
+  [ "$log_limit" -gt 30 ] && log_limit=30
+  [ "$log_limit" -lt 1 ] && log_limit=1
+  if [ -n "$logfile" ] && [ -f "$logfile" ]; then
+    tui_load_log_lines "$logfile" "$log_limit"
+  fi
+  if [ ${#TUI_RIGHT_LINES[@]} -le 2 ]; then
+    TUI_RIGHT_LINES+=("${TUI_DIM}Waiting for runner output...${TUI_RESET}")
+  fi
+  while [ ${#TUI_RIGHT_LINES[@]} -lt "$content_rows" ]; do
+    TUI_RIGHT_LINES+=("")
+  done
+
+  tput clear 2>/dev/null || clear
+  tput cup 0 0 2>/dev/null || true
+  printf "%s%s\n" "$(tui_box_top "Projects & Status" "$left_width")" "$(tui_box_top "Live Output" "$right_width")"
+
+  for ((i = 0; i < content_rows; i++)); do
+    local left_line="${TUI_LEFT_LINES[$i]:-}"
+    local right_line="${TUI_RIGHT_LINES[$i]:-}"
+    local left_render right_render
+
+    if [[ "$left_line" == __RULE__* ]]; then
+      left_render=$(tui_box_rule "${left_line#__RULE__}" "$left_width")
+    else
+      left_render=$(tui_box_line "$left_line" "$left_width")
+    fi
+
+    if [[ "$right_line" == __RULE__* ]]; then
+      right_render=$(tui_box_rule "${right_line#__RULE__}" "$right_width")
+    else
+      right_render=$(tui_box_line "$right_line" "$right_width")
+    fi
+
+    printf "%s%s\n" "$left_render" "$right_render"
+  done
+
+  printf "%s%s" "$(tui_box_bottom "$left_width")" "$(tui_box_bottom "$right_width")"
+}
+
+find_project_plan_files() {
+  local project_key=$1
+  local project_path
+  local plan_files=()
+  local file=""
+
+  project_path=$(get_project_field "$project_key" "path")
+  [ -z "$project_path" ] && return
+
+  while IFS= read -r -d '' file; do
+    file=${file#"$project_path/"}
+    plan_files+=("$file")
+  done < <(find "$project_path" -maxdepth 3 -type f \( -iname "*plan*.md" -o -iname "*PLAN*.md" \) -print0 2>/dev/null)
+
+  while IFS= read -r -d '' file; do
+    file=${file#"$project_path/"}
+    plan_files+=("$file")
+  done < <(find "$project_path/docs" -maxdepth 2 -type f -name "*.md" -print0 2>/dev/null)
+
+  if [ ${#plan_files[@]} -eq 0 ]; then
+    return
+  fi
+
+  printf '%s\n' "${plan_files[@]}" | sort -u
+}
+
+cmd_build_project_interactive() {
+  local project_key=$1
+  local project_path plan_file provider flag progress_file done_count resume phase_num
+  local plan_files=()
+  local candidate=""
+
+  clear
+  header
+  gum style --foreground 242 --bold "  BUILD PLAN"
+  echo ""
+
+  project_path=$(get_project_field "$project_key" "path")
+  if [ -z "$project_path" ] || [ ! -d "$project_path" ]; then
+    gum style --foreground 203 "  Project path not found for $project_key"
+    sleep 2
+    return
+  fi
+
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] && plan_files+=("$candidate")
+  done < <(find_project_plan_files "$project_key")
+
+  if [ ${#plan_files[@]} -eq 0 ]; then
+    gum style --foreground 203 "  No plan files found in $project_key"
+    echo "  Create a markdown file with ## Phase headings, then run:"
+    echo "  autoclaw build $project_key path/to/plan.md"
+    sleep 3
+    return
+  fi
+
+  plan_file=$(printf '%s\n' "${plan_files[@]}" | gum choose --header "Plan file:" --height 12)
+  [ -z "$plan_file" ] && return
+
+  provider=$(gum choose --header "Provider:" "claude (Opus max)" "codex (GPT-5.4)" "codex-fast (GPT-5.4 fast)")
+  [ -z "$provider" ] && return
+  flag=""
+  case "$provider" in
+    *codex-fast*) flag="--codex-fast" ;;
+    *codex*)      flag="--codex" ;;
+    *)            flag="--claude" ;;
+  esac
+
+  progress_file="$project_path/.autoclaw/builds/build-progress.md"
+  if [ -f "$progress_file" ]; then
+    done_count=$(grep -c "^\- \[x\]" "$progress_file" 2>/dev/null || echo 0)
+    if [ "$done_count" -gt 0 ] 2>/dev/null; then
+      echo ""
+      gum style --foreground 117 "  $done_count phase(s) already completed. Resume from next?"
+      resume=$(gum choose "Resume from next phase" "Start from beginning" "Pick specific phase")
+      case "$resume" in
+        *"beginning"*) flag="$flag --phase 1" ;;
+        *"specific"*)
+          phase_num=$(gum input --placeholder "Phase number" --prompt "Start from phase: " --width 10)
+          [ -n "$phase_num" ] && flag="$flag --phase $phase_num"
+          ;;
+      esac
+    fi
+  fi
+
+  echo ""
+  gum style --foreground 114 "Starting build: $project_key / $plan_file"
+  "$REPO_ROOT/scripts/build.sh" "$project_key" "$plan_file" $flag
+}
+
+cmd_review_project_interactive() {
+  local project_key=$1
+  local provider flag
+
+  clear
+  header
+  gum style --foreground 242 --bold "  DEEP REVIEW"
+  echo ""
+
+  provider=$(gum choose --header "Provider:" "claude (Opus max)" "codex (GPT-5.4)" "codex-fast (GPT-5.4 fast)")
+  [ -z "$provider" ] && return
+  flag=""
+  case "$provider" in
+    *codex-fast*) flag="--codex-fast" ;;
+    *codex*)      flag="--codex" ;;
+    *)            flag="--claude" ;;
+  esac
+
+  echo ""
+  gum style --foreground 114 "Starting deep review for $project_key ($flag)..."
+  "$REPO_ROOT/scripts/deep-review.sh" "$project_key" "$flag"
+}
+
+cmd_loop_project_interactive() {
+  local project_key=$1
+  local loop_type profile cycles
+
+  clear
+  header
+  gum style --foreground 242 --bold "  CONTINUOUS LOOP"
+  echo ""
+
+  loop_type=$(gum choose --header "Loop type:" \
+    "Full cycles (5 cycles → merge → repeat)" \
+    "Single profile continuous")
+  [ -z "$loop_type" ] && return
+
+  if [ "$loop_type" = "Single profile continuous" ]; then
+    profile=$(gum choose --header "Profile:" "reliability" "security" "performance" "quality" "issues")
+    [ -z "$profile" ] && return
+    cycles=$(gum choose --header "Max cycles:" "10" "25" "50")
+    [ -z "$cycles" ] && return
+    echo ""
+    gum style --foreground 114 "Starting loop: $project_key / $profile / $cycles cycles..."
+    cmd_profile_wigman "$profile" "$project_key" "$cycles" "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}"
+  else
+    echo ""
+    gum style --foreground 114 "Starting loop: $project_key (continuous — autoclaw stop $project_key to end)..."
+    cmd_loop "$project_key"
+  fi
+}
+
 cmd_interactive() {
-  while true; do
+  if [ ! -t 0 ] || [ ! -t 1 ]; then
+    gum style --foreground 203 "Interactive mode requires a terminal."
+    return 1
+  fi
+
+  local selected_index=0
+  local projects=($(get_projects))
+  local key="" read_status=0 seq="" arrow=""
+
+  [ ${#projects[@]} -eq 0 ] && {
     clear
     header
+    echo ""
+    gum style --foreground 242 "  No projects registered yet."
+    gum style --foreground 238 "  Add one with: autoclaw add /path/to/project"
+    echo ""
+    return 0
+  }
 
-    local choice=$(gum choose --height 15 \
-      "▶️   Run Cycles" \
-      "🔨  Build Plan" \
-      "🔍  Deep Review" \
-      "🔄  Loop (Continuous)" \
-      "📁  Projects" \
-      "🔬  Experiments" \
-      "📋  Live Console" \
-      "🌐  Web Dashboard" \
-      "🔗  GitHub Issues" \
-      "⚙️   Settings" \
-      "❓  Help" \
-      "🚪  Exit")
+  tui_init_theme
+  trap 'tui_restore_terminal' EXIT
+  trap 'tui_restore_terminal; exit 130' INT TERM
+  tui_resume_terminal
 
-    case "$choice" in
-      "▶️   Run Cycles")       cmd_run_interactive ;;
-      "🔨  Build Plan")        cmd_build_interactive ;;
-      "🔍  Deep Review")       cmd_review_interactive ;;
-      "🔄  Loop (Continuous)") cmd_loop_interactive ;;
-      "📁  Projects")          cmd_projects_interactive ;;
-      "🔬  Experiments")       cmd_experiments_interactive ;;
-      "📋  Live Console")      cmd_live ;;
-      "🌐  Web Dashboard")     "$UI_LAUNCHER" ;;
-      "🔗  GitHub Issues")     cmd_github_interactive ;;
-      "⚙️   Settings")          cmd_settings ;;
-      "❓  Help")               cmd_help; read -rsn1 ;;
-      "🚪  Exit"|"")           clear; exit 0 ;;
+  while true; do
+    projects=($(get_projects))
+    [ ${#projects[@]} -eq 0 ] && break
+    [ "$selected_index" -ge "${#projects[@]}" ] && selected_index=$((${#projects[@]} - 1))
+    [ "$selected_index" -lt 0 ] && selected_index=0
+
+    tui_render_shell "$selected_index" "${projects[$selected_index]}"
+
+    IFS= read -rsn1 -t 2 key
+    read_status=$?
+    if [ "$read_status" -ne 0 ]; then
+      continue
+    fi
+
+    if [ -z "$key" ]; then
+      tui_suspend_terminal
+      cmd_project_detail "${projects[$selected_index]}"
+      tui_resume_terminal
+      continue
+    fi
+
+    case "$key" in
+      q|Q)
+        break
+        ;;
+      r|R)
+        tui_suspend_terminal
+        run_project_interactive "${projects[$selected_index]}"
+        tui_resume_terminal
+        ;;
+      l|L)
+        tui_suspend_terminal
+        cmd_loop_project_interactive "${projects[$selected_index]}"
+        tui_resume_terminal
+        ;;
+      v|V)
+        tui_suspend_terminal
+        cmd_review_project_interactive "${projects[$selected_index]}"
+        tui_resume_terminal
+        ;;
+      b|B)
+        tui_suspend_terminal
+        cmd_build_project_interactive "${projects[$selected_index]}"
+        tui_resume_terminal
+        ;;
+      s|S)
+        tui_suspend_terminal
+        if [ "$(is_running "${projects[$selected_index]}")" = "yes" ]; then
+          cmd_stop "${projects[$selected_index]}"
+        else
+          cmd_stop
+        fi
+        echo ""
+        gum style --foreground 238 "  Press any key to continue..."
+        read -rsn1
+        tui_resume_terminal
+        ;;
+      [1-9])
+        if [ $((key - 1)) -lt "${#projects[@]}" ]; then
+          selected_index=$((key - 1))
+        fi
+        ;;
+      $'\x1b')
+        seq=""
+        IFS= read -rsn2 -t 1 seq || true
+        if [ "$seq" = "[A" ] || [ "$seq" = "[B" ]; then
+          arrow=${seq#\[}
+          case "$arrow" in
+            A) selected_index=$((selected_index - 1)) ;;
+            B) selected_index=$((selected_index + 1)) ;;
+          esac
+          [ "$selected_index" -lt 0 ] && selected_index=0
+          [ "$selected_index" -ge "${#projects[@]}" ] && selected_index=$((${#projects[@]} - 1))
+        fi
+        ;;
     esac
   done
+
+  tui_restore_terminal
+  trap - EXIT INT TERM
 }
 
 # ── Build Plan (Interactive) ──────────────────────────────────────────
@@ -597,62 +1271,7 @@ cmd_build_interactive() {
   local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
   [ -z "$selected" ] && return
   local project_key=$(echo "$selected" | cut -d' ' -f1)
-  local project_path=$(get_project_field "$project_key" "path")
-
-  # Find plan files in the project
-  local plan_files=()
-  while IFS= read -r -d '' f; do
-    plan_files+=("$(basename "$f")")
-  done < <(find "$project_path" -maxdepth 3 -name "*PLAN*" -o -name "*plan*" -type f 2>/dev/null | grep -i "\.md$" | head -10 | tr '\n' '\0')
-
-  # Also check docs/
-  while IFS= read -r -d '' f; do
-    local rel=${f#"$project_path/"}
-    plan_files+=("$rel")
-  done < <(find "$project_path/docs" -maxdepth 2 -name "*.md" -type f 2>/dev/null | head -10 | tr '\n' '\0')
-
-  if [ ${#plan_files[@]} -eq 0 ]; then
-    gum style --foreground 203 "  No plan files found in $project_key"
-    echo "  Create a markdown file with ## Phase headings, then run:"
-    echo "  autoclaw build $project_key path/to/plan.md"
-    sleep 3
-    return
-  fi
-
-  echo "  Select a plan file:"
-  local plan_file=$(printf '%s\n' "${plan_files[@]}" | sort -u | gum choose --height $((${#plan_files[@]} + 2)))
-  [ -z "$plan_file" ] && return
-
-  # Pick provider
-  local provider=$(gum choose --header "Provider:" "claude (Opus max)" "codex (GPT-5.4)" "codex-fast (GPT-5.4 fast)")
-  local flag=""
-  case "$provider" in
-    *codex-fast*) flag="--codex-fast" ;;
-    *codex*)      flag="--codex" ;;
-    *)            flag="--claude" ;;
-  esac
-
-  # Check for resume
-  local progress_file="$project_path/.autoclaw/builds/build-progress.md"
-  if [ -f "$progress_file" ]; then
-    local done_count=$(grep -c "^\- \[x\]" "$progress_file" 2>/dev/null || echo 0)
-    if [ "$done_count" -gt 0 ]; then
-      echo ""
-      gum style --foreground 117 "  $done_count phase(s) already completed. Resume from next?"
-      local resume=$(gum choose "Resume from next phase" "Start from beginning" "Pick specific phase")
-      case "$resume" in
-        *"beginning"*) flag="$flag --phase 1" ;;
-        *"specific"*)
-          local phase_num=$(gum input --placeholder "Phase number" --prompt "Start from phase: " --width 10)
-          [ -n "$phase_num" ] && flag="$flag --phase $phase_num"
-          ;;
-      esac
-    fi
-  fi
-
-  echo ""
-  gum style --foreground 114 "Starting build: $project_key / $plan_file"
-  "$REPO_ROOT/scripts/build.sh" "$project_key" "$plan_file" $flag
+  cmd_build_project_interactive "$project_key"
 }
 
 # ── Deep Review (Interactive) ────────────────────────────────────────
@@ -671,18 +1290,7 @@ cmd_review_interactive() {
   local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
   [ -z "$selected" ] && return
   local project_key=$(echo "$selected" | cut -d' ' -f1)
-
-  local provider=$(gum choose --header "Provider:" "claude (Opus max)" "codex (GPT-5.4)" "codex-fast (GPT-5.4 fast)")
-  local flag=""
-  case "$provider" in
-    *codex-fast*) flag="--codex-fast" ;;
-    *codex*)      flag="--codex" ;;
-    *)            flag="--claude" ;;
-  esac
-
-  echo ""
-  gum style --foreground 114 "Starting deep review for $project_key ($flag)..."
-  "$REPO_ROOT/scripts/deep-review.sh" "$project_key" "$flag"
+  cmd_review_project_interactive "$project_key"
 }
 
 # ── Loop (Interactive) ───────────────────────────────────────────────
@@ -701,22 +1309,7 @@ cmd_loop_interactive() {
   local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
   [ -z "$selected" ] && return
   local project_key=$(echo "$selected" | cut -d' ' -f1)
-
-  local loop_type=$(gum choose --header "Loop type:" \
-    "Full cycles (5 cycles → merge → repeat)" \
-    "Single profile continuous")
-
-  if [ "$loop_type" = "Single profile continuous" ]; then
-    local profile=$(gum choose --header "Profile:" "reliability" "security" "performance" "quality" "issues")
-    local cycles=$(gum choose --header "Max cycles:" "10" "25" "50")
-    echo ""
-    gum style --foreground 114 "Starting loop: $project_key / $profile / $cycles cycles..."
-    cmd_profile_wigman "$profile" "$project_key" "$cycles" "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}"
-  else
-    echo ""
-    gum style --foreground 114 "Starting loop: $project_key (continuous — autoclaw stop $project_key to end)..."
-    cmd_loop "$project_key"
-  fi
+  cmd_loop_project_interactive "$project_key"
 }
 
 # ── Run Cycles (Interactive) ─────────────────────────────────────────
@@ -2330,7 +2923,9 @@ cmd_help() {
   gum style --foreground "$d" --bold "  PROJECTS"
   echo ""
   printf "  $(gum style --foreground $c 'autoclaw list')                                         List all projects\n"
-  printf "  $(gum style --foreground $c 'autoclaw add') $(gum style --foreground $p '<path>')                                Add a project\n"
+  printf "  $(gum style --foreground $c 'autoclaw create') $(gum style --foreground $p '<name> [--init]')                   Scaffold a new project from template\n"
+  printf "  $(gum style --foreground $c 'autoclaw init') $(gum style --foreground $p '<name> [path]')                      Register existing project with AutoClawDev\n"
+  printf "  $(gum style --foreground $c 'autoclaw add') $(gum style --foreground $p '<path>')                                Add a project (legacy)\n"
   printf "  $(gum style --foreground $c 'autoclaw log') $(gum style --foreground $p '[project]')                             Experiment history\n"
   printf "  $(gum style --foreground $c 'autoclaw status')                                       Active runs + stats\n"
   printf "  $(gum style --foreground $c 'autoclaw github') $(gum style --foreground $p '<project>')                          GitHub issues\n"
@@ -2404,6 +2999,8 @@ case "${1:-}" in
   stop)      cmd_stop "${2:-}" ;;
 
   # ── Projects ───────────────────────────────────────────────────────
+  create)    "$REPO_ROOT/scripts/create-project.sh" "${@:2}" ;;
+  init)      "$REPO_ROOT/scripts/init-project.sh" "${@:2}" ;;
   list|ls)   cmd_list ;;
   add)       cmd_add "${2:-}" ;;
   log)       cmd_log "${2:-}" ;;
