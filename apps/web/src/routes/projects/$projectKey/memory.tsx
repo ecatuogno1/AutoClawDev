@@ -2,6 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useProjectMemory } from "@/lib/api";
 import type { MemoryFinding } from "@/types";
 import { useState, useMemo } from "react";
+import { ProjectTabs } from "@/components/ProjectTabs";
 
 export const Route = createFileRoute("/projects/$projectKey/memory")({
   component: MemoryPage,
@@ -228,6 +229,8 @@ function MemoryPage() {
             : "What AutoClawDev has learned about this project"}
         </p>
       </div>
+
+      <ProjectTabs projectKey={projectKey} activeTab="memory" />
 
       {isLoading ? (
         <div className="bg-[#161b22] border border-[#30363d] rounded-xl animate-pulse h-64" />

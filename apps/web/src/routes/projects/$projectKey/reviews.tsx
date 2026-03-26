@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useReviews, useLatestReview } from "@/lib/api";
 import { useState, useMemo } from "react";
+import { ProjectTabs } from "@/components/ProjectTabs";
 
 export const Route = createFileRoute("/projects/$projectKey/reviews")({
   component: ReviewsPage,
@@ -453,6 +454,8 @@ function ReviewsPage() {
             : "AI-powered deep analysis of your codebase"}
         </p>
       </div>
+
+      <ProjectTabs projectKey={projectKey} activeTab="reviews" />
 
       {!hasContent && !isLoading && (
         <div className="bg-[#161b22] border border-[#30363d] rounded-xl p-12 text-center space-y-4">

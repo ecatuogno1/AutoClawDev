@@ -9,6 +9,7 @@ import {
   useReviews,
   useProjectMemory,
 } from "@/lib/api";
+import { ProjectTabs } from "@/components/ProjectTabs";
 import { ExperimentRow } from "@/components/ExperimentRow";
 import { RunButton } from "@/components/RunButton";
 import { RunChat } from "@/components/RunChat";
@@ -204,32 +205,7 @@ function ProjectDetail() {
         )}
       </div>
 
-      {/* Tab navigation */}
-      <div className="flex gap-1 border-b border-[#30363d]">
-        <span className="px-5 py-3 text-sm font-medium text-[#e6edf3] border-b-2 border-[#58a6ff]">
-          Runs
-        </span>
-        <Link
-          to="/projects/$projectKey/reviews"
-          params={{ projectKey }}
-          className="px-5 py-3 text-sm font-medium text-[#8b949e] hover:text-[#e6edf3] transition-colors"
-        >
-          Code Review
-          {reviewCount > 0 && (
-            <span className="ml-1.5 text-xs bg-[#21262d] px-1.5 py-0.5 rounded-full">{reviewCount}</span>
-          )}
-        </Link>
-        <Link
-          to="/projects/$projectKey/memory"
-          params={{ projectKey }}
-          className="px-5 py-3 text-sm font-medium text-[#8b949e] hover:text-[#e6edf3] transition-colors"
-        >
-          Knowledge Base
-          {openFindings > 0 && (
-            <span className="ml-1.5 text-xs bg-[#d2992220] text-[#d29922] px-1.5 py-0.5 rounded-full">{openFindings}</span>
-          )}
-        </Link>
-      </div>
+      <ProjectTabs projectKey={projectKey} activeTab="runs" />
 
       {/* Stats row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

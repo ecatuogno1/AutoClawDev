@@ -9,6 +9,8 @@ import type {
   DeepReviewSession,
   DeepReviewDetail,
   ProjectMemory,
+  WorkspaceDirectoryListing,
+  WorkspaceGitStatus,
 } from "@/types";
 
 const BASE = "/api";
@@ -27,6 +29,19 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   });
   if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
   return res.json();
+}
+
+function buildQueryString(params: Record<string, string | undefined>) {
+  const searchParams = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value && value.length > 0) {
+      searchParams.set(key, value);
+    }
+  }
+
+  const query = searchParams.toString();
+  return query ? `?${query}` : "";
 }
 
 // Projects
@@ -141,6 +156,40 @@ export function useProjectMemory(key: string) {
     queryKey: ["memory", key],
     queryFn: () => fetchJSON(`/memory/${key}/memory`),
     refetchInterval: 60000,
+  });
+}
+
+export function useWorkspaceFiles(
+  projectKey: string,
+  path?: string,
+  enabled = true,
+) {
+  return useQuery<WorkspaceDirectoryListing>({
+    queryKey: ["workspace", "files", projectKey, path ?? "."],
+    queryFn: () =>
+      fetchJSON(
+        `/workspace/files${buildQueryString({
+          project: projectKey,
+          path,
+        })}`,
+      ),
+    enabled,
+    staleTime: 30000,
+  });
+}
+
+export function useWorkspaceGitStatus(projectKey: string, enabled = true) {
+  return useQuery<WorkspaceGitStatus>({
+    queryKey: ["workspace", "git", "status", projectKey],
+    queryFn: () =>
+      fetchJSON(
+        `/workspace/git/status${buildQueryString({
+          project: projectKey,
+        })}`,
+      ),
+    enabled,
+    staleTime: 15000,
+    refetchInterval: 15000,
   });
 }
 

@@ -158,6 +158,32 @@ export interface ProjectMemory {
   totalFindings: number;
 }
 
+export interface WorkspaceFileEntry {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  size?: number;
+  language?: string;
+}
+
+export interface WorkspaceDirectoryListing {
+  path: string;
+  entries: WorkspaceFileEntry[];
+}
+
+export interface WorkspaceGitFileStatus {
+  status: string;
+  path: string;
+}
+
+export interface WorkspaceGitStatus {
+  branch: string;
+  lastCommit: string;
+  files: WorkspaceGitFileStatus[];
+  clean: boolean;
+  error?: string;
+}
+
 export interface SSEEvent {
   type: "output" | "start" | "stop" | "done" | "connected";
   data: {
