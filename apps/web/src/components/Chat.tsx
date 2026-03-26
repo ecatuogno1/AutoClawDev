@@ -1,5 +1,11 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useProjects } from "@/lib/api";
+import {
+  CHAT_HISTORY_EVENT,
+  addRecentChat,
+  getStoredChatProvider,
+  setStoredChatProvider,
+} from "@/lib/chatHistory";
 
 interface ChatMessage {
   role: "user" | "assistant";
@@ -13,7 +19,7 @@ export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
-  const [provider, setProvider] = useState<"claude" | "codex">("claude");
+  const [provider, setProvider] = useState<"claude" | "codex">(() => getStoredChatProvider());
   const [projectKey, setProjectKey] = useState<string>("");
   const [sessionId, setSessionId] = useState<string>("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -25,6 +31,23 @@ export function Chat() {
   }, []);
 
   useEffect(scrollToBottom, [messages, scrollToBottom]);
+
+  useEffect(() => {
+    const syncProvider = () => {
+      setProvider(getStoredChatProvider());
+    };
+
+    window.addEventListener(CHAT_HISTORY_EVENT, syncProvider as EventListener);
+    window.addEventListener("storage", syncProvider);
+    return () => {
+      window.removeEventListener(CHAT_HISTORY_EVENT, syncProvider as EventListener);
+      window.removeEventListener("storage", syncProvider);
+    };
+  }, []);
+
+  useEffect(() => {
+    setStoredChatProvider(provider);
+  }, [provider]);
 
   const sendMessage = async () => {
     const text = input.trim();
@@ -38,6 +61,12 @@ export function Chat() {
       projectKey: projectKey || undefined,
     };
 
+    addRecentChat({
+      prompt: text,
+      projectKey: projectKey || undefined,
+      provider,
+      timestamp: userMsg.timestamp,
+    });
     setMessages((prev) => [...prev, userMsg]);
     setInput("");
     setStreaming(true);

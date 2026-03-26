@@ -1,0 +1,104 @@
+import { useNavigate, useRouterState } from "@tanstack/react-router";
+import type { ReactNode } from "react";
+import { cn } from "@/lib/cn";
+import {
+  ACTIVITY_PANEL_ITEMS,
+  SETTINGS_ITEM,
+  type ActivityPanelId,
+  isPathWithinPanel,
+  isSettingsPath,
+} from "@/components/activityPanels";
+
+interface ActivityBarProps {
+  activePanel: ActivityPanelId | null;
+  onSelectPanel: (panelId: ActivityPanelId) => void;
+  activeRunCount?: number;
+  badges?: Partial<Record<ActivityPanelId, number>>;
+  isSettingsActive?: boolean;
+}
+
+export default function ActivityBar(props: ActivityBarProps) {
+  const navigate = useNavigate();
+  const routerState = useRouterState();
+  const pathname = routerState.location.pathname;
+
+  return (
+    <div className="fixed inset-y-0 left-0 z-20 flex w-12 flex-col items-center justify-between border-r border-[#30363d]/80 bg-[#010409]/95 backdrop-blur-sm">
+      <div className="flex flex-col items-center gap-0.5 pt-2">
+        {ACTIVITY_PANEL_ITEMS.map((item) => {
+          const isActive = props.activePanel === item.id;
+          const badge = props.badges?.[item.id];
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              aria-label={item.label}
+              title={item.label}
+              className={cn(
+                "relative flex size-10 items-center justify-center rounded-lg transition-colors",
+                isActive
+                  ? "text-[#e6edf3] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-[#e6edf3]"
+                  : "text-[#6e7681] hover:text-[#8b949e]",
+              )}
+              onClick={() => {
+                if (!isPathWithinPanel(pathname, item.id)) {
+                  void navigate({ to: item.to });
+                }
+                props.onSelectPanel(item.id);
+              }}
+            >
+              <Icon className="size-5" />
+              {item.id === "live"
+                ? renderLiveStatus(props.activeRunCount ?? 0)
+                : renderBadge(badge)}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-col items-center gap-0.5 pb-2">
+        <button
+          type="button"
+          aria-label={SETTINGS_ITEM.label}
+          title={SETTINGS_ITEM.label}
+          className={cn(
+            "relative flex size-10 items-center justify-center rounded-lg transition-colors",
+            props.isSettingsActive
+              ? "text-[#e6edf3] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-[#e6edf3]"
+              : "text-[#6e7681] hover:text-[#8b949e]",
+          )}
+          onClick={() => {
+            if (!isSettingsPath(pathname)) {
+              void navigate({ to: SETTINGS_ITEM.to });
+            }
+          }}
+        >
+          <SETTINGS_ITEM.icon className="size-5" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function renderBadge(value?: number): ReactNode {
+  if (value == null || value <= 0) return null;
+
+  return (
+    <span className="absolute right-1 top-1 flex min-w-4 items-center justify-center rounded-full bg-[#388bfd] px-1 text-[9px] font-bold leading-4 text-white">
+      {value > 9 ? "9+" : value}
+    </span>
+  );
+}
+
+function renderLiveStatus(activeRunCount: number): ReactNode {
+  if (activeRunCount > 0) {
+    return (
+      <span className="absolute right-1 top-1 flex min-w-4 items-center justify-center rounded-full bg-[#3fb950] px-1 text-[9px] font-bold leading-4 text-[#0d1117]">
+        {activeRunCount > 9 ? "9+" : activeRunCount}
+      </span>
+    );
+  }
+
+  return <span className="absolute right-2 top-2 size-1.5 rounded-full bg-[#484f58]" />;
+}
