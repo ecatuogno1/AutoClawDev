@@ -11,6 +11,9 @@ import type {
   ProjectMemory,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
+  WorkspaceGitCommitResponse,
+  WorkspaceGitDiffResponse,
+  WorkspaceGitStageResponse,
   WorkspaceGitStatus,
 } from "@/types";
 
@@ -213,6 +216,67 @@ export function useWorkspaceGitStatus(projectKey: string, enabled = true) {
     enabled,
     staleTime: 15000,
     refetchInterval: 15000,
+  });
+}
+
+export function useWorkspaceGitDiff(
+  projectKey: string,
+  filePath?: string | null,
+  enabled = true,
+) {
+  return useQuery<WorkspaceGitDiffResponse>({
+    queryKey: ["workspace", "git", "diff", projectKey, filePath ?? null],
+    queryFn: () =>
+      fetchJSON(
+        `/workspace/git/diff${buildQueryString({
+          project: projectKey,
+          file: filePath ?? undefined,
+        })}`,
+      ),
+    enabled: enabled && Boolean(filePath),
+    staleTime: 10000,
+  });
+}
+
+export function useWorkspaceGitStage(projectKey: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: {
+      paths?: string[];
+      all?: boolean;
+      mode?: "stage" | "unstage";
+    }) =>
+      postJSON<WorkspaceGitStageResponse>("/workspace/git/stage", {
+        project: projectKey,
+        ...params,
+      }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({
+        queryKey: ["workspace", "git", "status", projectKey],
+      });
+      await qc.invalidateQueries({
+        queryKey: ["workspace", "git", "diff", projectKey],
+      });
+    },
+  });
+}
+
+export function useWorkspaceGitCommit(projectKey: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { message: string; all?: boolean }) =>
+      postJSON<WorkspaceGitCommitResponse>("/workspace/git/commit", {
+        project: projectKey,
+        ...params,
+      }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({
+        queryKey: ["workspace", "git", "status", projectKey],
+      });
+      await qc.invalidateQueries({
+        queryKey: ["workspace", "git", "diff", projectKey],
+      });
+    },
   });
 }
 

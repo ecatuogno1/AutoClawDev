@@ -1,13 +1,18 @@
 import { useEffect, useState } from "react";
+import { GitBranch, TerminalSquare } from "lucide-react";
 import { Chat } from "@/components/Chat";
 import { CodeViewer, type WorkspaceFileTarget } from "./CodeViewer";
 import { FileTree } from "./FileTree";
-import { TerminalPanel } from "./TerminalPanel";
 import { useWorkspaceGitStatus } from "@/lib/api";
 import {
   basenameOf,
   getLanguageLabel,
 } from "@/components/workspace/filePresentation";
+import {
+  WorkspaceBottomPanel,
+  type WorkspaceBottomTab,
+} from "./WorkspaceBottomPanel";
+import { cn } from "@/lib/cn";
 
 const SIDEBAR_WIDTH_KEY = "autoclaw.workspace.sidebarWidth";
 const DEFAULT_SIDEBAR_WIDTH = 250;
@@ -29,7 +34,7 @@ export function WorkspaceView({
   const [activeFile, setActiveFile] = useState<WorkspaceFileTarget | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
-  const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [activeBottomTab, setActiveBottomTab] = useState<WorkspaceBottomTab | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(true);
   const { data: gitStatus } = useWorkspaceGitStatus(projectKey);
 
@@ -87,6 +92,7 @@ export function WorkspaceView({
 
   const branchLabel = gitStatus?.branch || "unknown";
   const activeFilePath = activeFile?.path ?? null;
+  const changedFilesCount = gitStatus?.counts.total ?? gitStatus?.files.length ?? 0;
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-[#30363d] bg-[#0d1117]">
@@ -132,6 +138,15 @@ export function WorkspaceView({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#30363d] bg-[#010409] px-3 py-1.5 text-xs text-[#8b949e]">
+              <GitBranch className="size-3.5 text-[#58a6ff]" />
+              <span className="font-medium text-[#e6edf3]">{branchLabel}</span>
+              {changedFilesCount > 0 ? (
+                <span className="rounded-full bg-[#1f6feb] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  {changedFilesCount}
+                </span>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={() => setIsChatOpen((current) => !current)}
@@ -141,10 +156,38 @@ export function WorkspaceView({
             </button>
             <button
               type="button"
-              onClick={() => setIsTerminalOpen((current) => !current)}
-              className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
+              onClick={() =>
+                setActiveBottomTab((current) => (current === "git" ? null : "git"))
+              }
+              className={cn(
+                "inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                activeBottomTab === "git"
+                  ? "border-[#58a6ff] bg-[#1f6feb20] text-[#e6edf3]"
+                  : "border-[#30363d] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#e6edf3]",
+              )}
             >
-              {isTerminalOpen ? "Hide Terminal" : "Show Terminal"}
+              <GitBranch className="size-3.5" />
+              <span>Source Control</span>
+              {changedFilesCount > 0 ? (
+                <span className="rounded-full bg-[#1f6feb] px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  {changedFilesCount}
+                </span>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setActiveBottomTab((current) => (current === "terminal" ? null : "terminal"))
+              }
+              className={cn(
+                "inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
+                activeBottomTab === "terminal"
+                  ? "border-[#58a6ff] bg-[#1f6feb20] text-[#e6edf3]"
+                  : "border-[#30363d] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#e6edf3]",
+              )}
+            >
+              <TerminalSquare className="size-3.5" />
+              <span>{activeBottomTab === "terminal" ? "Hide Terminal" : "Show Terminal"}</span>
             </button>
           </div>
         </div>
@@ -184,11 +227,12 @@ export function WorkspaceView({
           </div>
         </div>
 
-        <TerminalPanel
-          open={isTerminalOpen}
-          onOpenChange={setIsTerminalOpen}
+        <WorkspaceBottomPanel
+          activeTab={activeBottomTab}
+          onActiveTabChange={setActiveBottomTab}
           projectKey={projectKey}
           projectPath={projectPath}
+          changedFilesCount={changedFilesCount}
         />
 
         <div className="flex items-center gap-3 border-t border-[#30363d] bg-[#010409] px-4 py-2 text-xs text-[#8b949e]">

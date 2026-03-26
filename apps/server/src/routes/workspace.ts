@@ -1,18 +1,14 @@
 import { Router, type Request, type Response, type Router as ExpressRouter } from "express";
 import { readdir, readFile, writeFile, stat, mkdir } from "node:fs/promises";
-import { join, relative, extname, basename } from "node:path";
+import { basename, extname, join, relative } from "node:path";
 import { existsSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
 import { getProject } from "../lib/config.js";
 
 const router: ExpressRouter = Router();
 
 // ── Helpers ──────────────────────────────────────────────────────────
-
-function resolveProjectPath(projectKey: string | undefined): string {
-  return homedir(); // default to home; project resolution happens in route handlers
-}
 
 async function safeStat(path: string) {
   try {
@@ -39,6 +35,152 @@ function getLanguage(filename: string): string {
   return map[ext] || "plaintext";
 }
 
+async function resolveProjectBasePath(projectKey: string | undefined): Promise<string> {
+  if (!projectKey) {
+    return homedir();
+  }
+
+  const project = await getProject(projectKey);
+  return project?.path || homedir();
+}
+
+function runGitCommand(args: string[], cwd: string) {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf-8",
+    timeout: 10000,
+  });
+}
+
+interface ParsedGitFileStatus {
+  status: string;
+  path: string;
+  originalPath: string | null;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  indexStatus: string;
+  workingTreeStatus: string;
+  label: string;
+}
+
+function parseGitStatusLine(line: string): ParsedGitFileStatus {
+  const indexStatus = line[0] ?? " ";
+  const workingTreeStatus = line[1] ?? " ";
+  const rawPath = line.slice(3).trim();
+  const renamed = rawPath.includes(" -> ");
+  const [fromPath, toPath] = renamed
+    ? rawPath.split(" -> ", 2)
+    : [rawPath, rawPath];
+  const path = toPath || rawPath;
+  const originalPath = renamed && fromPath && fromPath !== path ? fromPath : null;
+  const untracked = indexStatus === "?" && workingTreeStatus === "?";
+  const staged = !untracked && indexStatus !== " ";
+  const unstaged = untracked || workingTreeStatus !== " ";
+
+  return {
+    status: `${indexStatus}${workingTreeStatus}`,
+    path,
+    originalPath,
+    staged,
+    unstaged,
+    untracked,
+    indexStatus,
+    workingTreeStatus,
+    label: describeGitStatus(indexStatus, workingTreeStatus),
+  };
+}
+
+function describeGitStatus(indexStatus: string, workingTreeStatus: string) {
+  if (indexStatus === "?" && workingTreeStatus === "?") {
+    return "Untracked";
+  }
+
+  if (indexStatus === "A" || workingTreeStatus === "A") {
+    return "Added";
+  }
+
+  if (indexStatus === "M" || workingTreeStatus === "M") {
+    return "Modified";
+  }
+
+  if (indexStatus === "D" || workingTreeStatus === "D") {
+    return "Deleted";
+  }
+
+  if (indexStatus === "R" || workingTreeStatus === "R") {
+    return "Renamed";
+  }
+
+  if (indexStatus === "C" || workingTreeStatus === "C") {
+    return "Copied";
+  }
+
+  if (indexStatus === "U" || workingTreeStatus === "U") {
+    return "Conflicted";
+  }
+
+  return "Changed";
+}
+
+function buildDiffForUntrackedFile(cwd: string, filePath: string) {
+  try {
+    return runGitCommand(["diff", "--no-index", "--", "/dev/null", filePath], cwd);
+  } catch (error) {
+    const diffOutput = extractGitCommandOutput(error);
+    return typeof diffOutput === "string" ? diffOutput : "";
+  }
+}
+
+function buildDiffForTrackedFile(cwd: string, filePath: string) {
+  try {
+    return runGitCommand(["diff", "--no-ext-diff", "HEAD", "--", filePath], cwd);
+  } catch (error) {
+    const diffOutput = extractGitCommandOutput(error);
+    return typeof diffOutput === "string" ? diffOutput : "";
+  }
+}
+
+function extractGitCommandOutput(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return null;
+  }
+
+  const maybeStdout = "stdout" in error ? error.stdout : null;
+  return typeof maybeStdout === "string" ? maybeStdout : null;
+}
+
+function getGitStatusSnapshot(cwd: string) {
+  const statusOutput = runGitCommand(["status", "--porcelain"], cwd);
+  const files = statusOutput
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map(parseGitStatusLine);
+
+  const branch = runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], cwd).trim();
+  const lastCommit = runGitCommand(["log", "--oneline", "-1"], cwd).trim();
+  const staged = files.filter((file) => file.staged);
+  const unstaged = files.filter((file) => file.unstaged && !file.untracked);
+  const untracked = files.filter((file) => file.untracked);
+
+  return {
+    branch,
+    lastCommit,
+    clean: files.length === 0,
+    counts: {
+      total: files.length,
+      staged: staged.length,
+      unstaged: unstaged.length,
+      untracked: untracked.length,
+    },
+    files,
+    staged,
+    unstaged,
+    untracked,
+  };
+}
+
 // ── File listing ─────────────────────────────────────────────────────
 
 interface FileEntry {
@@ -53,11 +195,7 @@ router.get("/files", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
   const dirPath = req.query.path as string | undefined;
 
-  let basePath = homedir();
-  if (projectKey) {
-    const project = await getProject(projectKey);
-    if (project?.path) basePath = project.path;
-  }
+  const basePath = await resolveProjectBasePath(projectKey);
 
   const targetDir = dirPath ? join(basePath, dirPath) : basePath;
 
@@ -120,11 +258,7 @@ router.get("/file", async (req: Request, res: Response) => {
 
   if (!filePath) return res.status(400).json({ error: "path is required" });
 
-  let basePath = homedir();
-  if (projectKey) {
-    const project = await getProject(projectKey);
-    if (project?.path) basePath = project.path;
-  }
+  const basePath = await resolveProjectBasePath(projectKey);
 
   const resolved = join(basePath, filePath);
   if (!resolved.startsWith(basePath)) {
@@ -163,11 +297,7 @@ router.post("/file", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "path and content are required" });
   }
 
-  let basePath = homedir();
-  if (projectKey) {
-    const proj = await getProject(projectKey);
-    if (proj?.path) basePath = proj.path;
-  }
+  const basePath = await resolveProjectBasePath(projectKey);
 
   const resolved = join(basePath, filePath);
   if (!resolved.startsWith(basePath)) {
@@ -188,25 +318,27 @@ router.post("/file", async (req: Request, res: Response) => {
 router.get("/git/status", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
 
-  let cwd = homedir();
-  if (projectKey) {
-    const project = await getProject(projectKey);
-    if (project?.path) cwd = project.path;
-  }
+  const cwd = await resolveProjectBasePath(projectKey);
 
   try {
-    const status = execSync("git status --porcelain", { cwd, encoding: "utf-8", timeout: 5000 });
-    const branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
-    const lastCommit = execSync("git log --oneline -1", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
-
-    const files = status.trim().split("\n").filter(Boolean).map((line) => ({
-      status: line.slice(0, 2).trim(),
-      path: line.slice(3),
-    }));
-
-    return res.json({ branch, lastCommit, files, clean: files.length === 0 });
+    return res.json(getGitStatusSnapshot(cwd));
   } catch {
-    return res.json({ branch: "unknown", lastCommit: "", files: [], clean: true, error: "Not a git repo" });
+    return res.json({
+      branch: "unknown",
+      lastCommit: "",
+      files: [],
+      staged: [],
+      unstaged: [],
+      untracked: [],
+      counts: {
+        total: 0,
+        staged: 0,
+        unstaged: 0,
+        untracked: 0,
+      },
+      clean: true,
+      error: "Not a git repo",
+    });
   }
 });
 
@@ -216,18 +348,118 @@ router.get("/git/diff", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
   const filePath = req.query.file as string | undefined;
 
-  let cwd = homedir();
-  if (projectKey) {
-    const project = await getProject(projectKey);
-    if (project?.path) cwd = project.path;
+  const cwd = await resolveProjectBasePath(projectKey);
+
+  try {
+    if (!filePath) {
+      const diff = buildDiffForTrackedFile(cwd, ".");
+      return res.json({ diff, file: null });
+    }
+
+    const snapshot = getGitStatusSnapshot(cwd);
+    const fileStatus = snapshot.files.find((entry) => entry.path === filePath);
+    if (!fileStatus) {
+      return res.json({ diff: "", file: null });
+    }
+
+    const diff = fileStatus.untracked
+      ? buildDiffForUntrackedFile(cwd, filePath)
+      : buildDiffForTrackedFile(cwd, filePath);
+
+    return res.json({
+      diff,
+      file: fileStatus,
+    });
+  } catch {
+    return res.json({ diff: "", file: null });
+  }
+});
+
+// ── Git stage / unstage ──────────────────────────────────────────────
+
+router.post("/git/stage", async (req: Request, res: Response) => {
+  const {
+    project: projectKey,
+    paths,
+    all,
+    mode,
+  }: {
+    project?: string;
+    paths?: string[];
+    all?: boolean;
+    mode?: "stage" | "unstage";
+  } = req.body ?? {};
+
+  const cwd = await resolveProjectBasePath(projectKey);
+  const action = mode === "unstage" ? "unstage" : "stage";
+
+  try {
+    if (all) {
+      if (action === "stage") {
+        runGitCommand(["add", "--all"], cwd);
+      } else {
+        runGitCommand(["reset", "HEAD", "--", "."], cwd);
+      }
+    } else if (Array.isArray(paths) && paths.length > 0) {
+      if (action === "stage") {
+        runGitCommand(["add", "--", ...paths], cwd);
+      } else {
+        runGitCommand(["reset", "HEAD", "--", ...paths], cwd);
+      }
+    } else {
+      return res.status(400).json({ error: "paths or all is required" });
+    }
+
+    return res.json({
+      ok: true,
+      mode: action,
+      status: getGitStatusSnapshot(cwd),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to update staged files",
+    });
+  }
+});
+
+// ── Git commit ───────────────────────────────────────────────────────
+
+router.post("/git/commit", async (req: Request, res: Response) => {
+  const {
+    project: projectKey,
+    message,
+    all,
+  }: {
+    project?: string;
+    message?: string;
+    all?: boolean;
+  } = req.body ?? {};
+
+  const cwd = await resolveProjectBasePath(projectKey);
+  const commitMessage = message?.trim();
+
+  if (!commitMessage) {
+    return res.status(400).json({ error: "commit message is required" });
   }
 
   try {
-    const cmd = filePath ? `git diff -- "${filePath}"` : "git diff";
-    const diff = execSync(cmd, { cwd, encoding: "utf-8", timeout: 10000 });
-    return res.json({ diff });
-  } catch {
-    return res.json({ diff: "" });
+    if (all) {
+      runGitCommand(["add", "--all"], cwd);
+    }
+
+    runGitCommand(["commit", "-m", commitMessage], cwd);
+
+    return res.json({
+      ok: true,
+      branch: runGitCommand(["rev-parse", "--abbrev-ref", "HEAD"], cwd).trim(),
+      commit: runGitCommand(["rev-parse", "--short", "HEAD"], cwd).trim(),
+      lastCommit: runGitCommand(["log", "--oneline", "-1"], cwd).trim(),
+      status: getGitStatusSnapshot(cwd),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Unable to create commit",
+    });
   }
 });
 
@@ -237,16 +469,12 @@ router.get("/git/log", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
   const limit = Math.min(Number(req.query.limit) || 20, 100);
 
-  let cwd = homedir();
-  if (projectKey) {
-    const project = await getProject(projectKey);
-    if (project?.path) cwd = project.path;
-  }
+  const cwd = await resolveProjectBasePath(projectKey);
 
   try {
-    const raw = execSync(
-      `git log --oneline --format='{"hash":"%h","message":"%s","date":"%ci","author":"%an"}' -${limit}`,
-      { cwd, encoding: "utf-8", timeout: 10000 },
+    const raw = runGitCommand(
+      ["log", "--oneline", `--format={\"hash\":\"%h\",\"message\":\"%s\",\"date\":\"%ci\",\"author\":\"%an\"}`, `-${limit}`],
+      cwd,
     );
     const commits = raw.trim().split("\n").filter(Boolean).map((line) => {
       try { return JSON.parse(line); } catch { return null; }
