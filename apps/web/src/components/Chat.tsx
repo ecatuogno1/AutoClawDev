@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ChatMessage } from "@autoclawdev/types";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { CornerDownLeft, LoaderCircle, Paperclip, Square } from "lucide-react";
 import { useProjects } from "@/lib/api";
 import {
   CHAT_HISTORY_EVENT,
   addRecentChat,
+  clearStoredChatSession,
   getStoredChatProvider,
+  getStoredChatSession,
   setStoredChatProvider,
+  setStoredChatSession,
 } from "@/lib/chatHistory";
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown";
 import { ToolCallCard } from "@/components/chat/ToolCallCard";
@@ -24,10 +28,86 @@ interface ChatProps {
   }) => void;
 }
 
-interface StreamEnvelope {
-  event: string;
-  data: unknown;
+type ChatConnectionState =
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "disconnected";
+
+interface SessionHistoryMessage {
+  type: "session-created" | "session-resumed";
+  sessionId: string;
+  provider: ChatProvider;
+  cwd: string;
+  createdAt: string;
+  lastMessageAt: string;
+  messageCount: number;
+  alive: boolean;
+  history: ChatMessage[];
 }
+
+interface MessageStartedMessage {
+  type: "message-started";
+  sessionId: string;
+  provider: ChatProvider;
+  cwd: string;
+  timestamp: string;
+  messageCount: number;
+}
+
+interface AssistantDeltaMessage {
+  type: "assistant-delta";
+  sessionId: string;
+  id: string;
+  provider: ChatProvider;
+  text: string;
+}
+
+interface AssistantMessage {
+  type: "assistant-message";
+  sessionId: string;
+  id: string;
+  provider: ChatProvider;
+  text: string;
+}
+
+interface ToolMessage {
+  type: "tool-call" | "tool-update";
+  sessionId: string;
+  tool: ChatToolCall;
+}
+
+interface MessageCompleteMessage {
+  type: "message-complete";
+  sessionId: string;
+  code: number | null;
+  signal: string | null;
+}
+
+interface SessionStoppedMessage {
+  type: "session-stopped";
+  sessionId: string;
+}
+
+interface ErrorMessage {
+  type: "error";
+  sessionId?: string;
+  message: string;
+}
+
+type ServerMessage =
+  | SessionHistoryMessage
+  | MessageStartedMessage
+  | AssistantDeltaMessage
+  | AssistantMessage
+  | ToolMessage
+  | MessageCompleteMessage
+  | SessionStoppedMessage
+  | ErrorMessage;
+
+type SessionRequest =
+  | { type: "create"; provider: ChatProvider }
+  | { type: "resume"; provider: ChatProvider; sessionId: string };
 
 export function Chat({
   currentFilePath = null,
@@ -41,13 +121,38 @@ export function Chat({
   const [streaming, setStreaming] = useState(false);
   const [provider, setProvider] = useState<ChatProvider>(() => getStoredChatProvider());
   const [projectKey, setProjectKey] = useState(initialProjectKey ?? "");
-  const [sessionId, setSessionId] = useState<string>("");
+  const [sessionId, setSessionId] = useState("");
   const [includeCurrentFile, setIncludeCurrentFile] = useState(Boolean(currentFilePath));
   const [pendingApprovalId, setPendingApprovalId] = useState<string | null>(null);
+  const [connectionState, setConnectionState] =
+    useState<ChatConnectionState>("disconnected");
+  const [sessionCreatedAt, setSessionCreatedAt] = useState<string | null>(null);
+  const [sessionCwd, setSessionCwd] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const disposedRef = useRef(false);
+  const sessionIdRef = useRef("");
+  const providerRef = useRef(provider);
+  const projectKeyRef = useRef(projectKey);
   const announcedAssistantIdsRef = useRef(new Set<string>());
+  const sessionRequestRef = useRef<SessionRequest | null>(null);
+  const didMountProviderRef = useRef(false);
+  const ignoreNextProviderResetRef = useRef(false);
   const { data: projects } = useProjects();
+
+  useEffect(() => {
+    sessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    providerRef.current = provider;
+  }, [provider]);
+
+  useEffect(() => {
+    projectKeyRef.current = projectKey;
+  }, [projectKey]);
 
   useEffect(() => {
     if (typeof initialProjectKey === "string") {
@@ -89,12 +194,41 @@ export function Chat({
     return projects?.find((project) => project.key === projectKey)?.name ?? projectKey;
   }, [projectKey, projects]);
 
+  const visibleMessageCount = useMemo(
+    () =>
+      timeline.filter(
+        (item) => item.type === "user-message" || item.type === "assistant-message",
+      ).length,
+    [timeline],
+  );
+
+  const sessionStartedLabel = useMemo(() => {
+    if (!sessionCreatedAt) {
+      return null;
+    }
+
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(sessionCreatedAt));
+    } catch {
+      return null;
+    }
+  }, [sessionCreatedAt]);
+
   const appendItem = useCallback((item: ChatTimelineItem) => {
     setTimeline((current) => [...current, item]);
   }, []);
 
   const upsertAssistantMessage = useCallback(
-    (payload: { id: string; provider: ChatProvider; text: string; append?: boolean; streaming?: boolean }) => {
+    (payload: {
+      id: string;
+      provider: ChatProvider;
+      text: string;
+      append?: boolean;
+      streaming?: boolean;
+    }) => {
       setTimeline((current) => {
         const index = current.findIndex(
           (item) => item.type === "assistant-message" && item.id === payload.id,
@@ -184,86 +318,342 @@ export function Chat({
     [onAssistantMessage],
   );
 
-  const handleStreamEnvelope = useCallback((envelope: StreamEnvelope) => {
-    const payload = (envelope.data ?? {}) as Record<string, unknown>;
+  const applySessionHistory = useCallback((history: ChatMessage[]) => {
+    announcedAssistantIdsRef.current = new Set(
+      history
+        .filter((message) => message.role === "assistant")
+        .map((message) => message.id),
+    );
 
-    if (envelope.event === "start") {
-      if (typeof payload.id === "string") {
-        setSessionId(payload.id);
-      }
-      return;
-    }
+    setTimeline(
+      history.map((message) => {
+        if (message.role === "user") {
+          return {
+            id: message.id,
+            type: "user-message",
+            text: message.text,
+            timestamp: message.timestamp,
+            referencedFiles: message.referencedFiles,
+          };
+        }
 
-    if (envelope.event === "assistant-delta") {
-      if (typeof payload.id === "string" && typeof payload.text === "string") {
-        const nextProvider = (payload.provider as ChatProvider) ?? provider;
-        announceAssistantMessage({
-          id: payload.id,
-          provider: nextProvider,
-          text: payload.text,
-        });
-        upsertAssistantMessage({
-          id: payload.id,
-          provider: nextProvider,
-          text: payload.text,
-          append: true,
-          streaming: true,
-        });
-      }
-      return;
-    }
+        if (message.role === "assistant") {
+          return {
+            id: message.id,
+            type: "assistant-message",
+            provider: message.provider,
+            text: message.text,
+            timestamp: message.timestamp,
+            streaming: false,
+          };
+        }
 
-    if (envelope.event === "assistant-message") {
-      if (typeof payload.id === "string" && typeof payload.text === "string") {
-        const nextProvider = (payload.provider as ChatProvider) ?? provider;
-        announceAssistantMessage({
-          id: payload.id,
-          provider: nextProvider,
-          text: payload.text,
-        });
-        upsertAssistantMessage({
-          id: payload.id,
-          provider: nextProvider,
-          text: payload.text,
-          streaming: false,
-        });
-      }
-      return;
-    }
+        return {
+          id: message.id,
+          type: "system",
+          text: message.text,
+          tone: message.tone ?? "info",
+          timestamp: message.timestamp,
+        };
+      }),
+    );
+  }, []);
 
-    if (envelope.event === "tool-call" || envelope.event === "tool-update") {
-      upsertToolCall(payload as unknown as ChatToolCall);
-      return;
-    }
-
-    if (envelope.event === "error") {
-      appendItem({
-        id: `error:${Date.now()}`,
-        type: "system",
-        text: typeof payload.message === "string" ? payload.message : "Unknown chat error",
-        tone: "error",
-        timestamp: new Date().toISOString(),
+  const syncSession = useCallback(
+    (message: SessionHistoryMessage) => {
+      sessionRequestRef.current = null;
+      sessionIdRef.current = message.sessionId;
+      setSessionId(message.sessionId);
+      setSessionCreatedAt(message.createdAt);
+      setSessionCwd(message.cwd);
+      setPendingApprovalId(null);
+      setStreaming(false);
+      markStreamingComplete();
+      applySessionHistory(message.history);
+      setStoredChatSession({
+        provider: message.provider,
+        sessionId: message.sessionId,
       });
+
+      if (message.provider !== providerRef.current) {
+        ignoreNextProviderResetRef.current = true;
+        setProvider(message.provider);
+      }
+    },
+    [applySessionHistory, markStreamingComplete],
+  );
+
+  const sendSocketMessage = useCallback((payload: Record<string, unknown>) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    socket.send(JSON.stringify(payload));
+    return true;
+  }, []);
+
+  const dispatchSessionRequest = useCallback(
+    (request: SessionRequest) => {
+      sessionRequestRef.current = request;
+
+      if (request.type === "resume") {
+        return sendSocketMessage({
+          type: "resume-session",
+          sessionId: request.sessionId,
+        });
+      }
+
+      return sendSocketMessage({
+        type: "create-session",
+        provider: request.provider,
+        projectKey: projectKeyRef.current || undefined,
+      });
+    },
+    [sendSocketMessage],
+  );
+
+  const queueDefaultSessionRequest = useCallback(() => {
+    const storedSession = getStoredChatSession();
+    if (storedSession && storedSession.provider === providerRef.current) {
+      return dispatchSessionRequest({
+        type: "resume",
+        provider: storedSession.provider,
+        sessionId: storedSession.sessionId,
+      });
+    }
+
+    clearStoredChatSession();
+    return dispatchSessionRequest({
+      type: "create",
+      provider: providerRef.current,
+    });
+  }, [dispatchSessionRequest]);
+
+  const connectSocket = useCallback(() => {
+    if (disposedRef.current) {
       return;
     }
 
-    if (envelope.event === "done") {
+    const activeSocket = socketRef.current;
+    if (
+      activeSocket &&
+      (activeSocket.readyState === WebSocket.OPEN ||
+        activeSocket.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
+    setConnectionState(activeSocket ? "reconnecting" : "connecting");
+
+    const socket = new WebSocket(buildChatSocketUrl());
+    socketRef.current = socket;
+
+    socket.onopen = () => {
+      setConnectionState("connected");
+      if (sessionRequestRef.current) {
+        dispatchSessionRequest(sessionRequestRef.current);
+        return;
+      }
+      queueDefaultSessionRequest();
+    };
+
+    socket.onmessage = (event) => {
+      let message: ServerMessage | null = null;
+      try {
+        message = JSON.parse(String(event.data)) as ServerMessage;
+      } catch {
+        message = null;
+      }
+
+      if (!message) {
+        return;
+      }
+
+      switch (message.type) {
+        case "session-created":
+        case "session-resumed":
+          syncSession(message);
+          return;
+        case "message-started":
+          sessionIdRef.current = message.sessionId;
+          setSessionId(message.sessionId);
+          setSessionCwd(message.cwd);
+          setStreaming(true);
+          return;
+        case "assistant-delta":
+          announceAssistantMessage({
+            id: message.id,
+            provider: message.provider,
+            text: message.text,
+          });
+          upsertAssistantMessage({
+            id: message.id,
+            provider: message.provider,
+            text: message.text,
+            append: true,
+            streaming: true,
+          });
+          return;
+        case "assistant-message":
+          announceAssistantMessage({
+            id: message.id,
+            provider: message.provider,
+            text: message.text,
+          });
+          upsertAssistantMessage({
+            id: message.id,
+            provider: message.provider,
+            text: message.text,
+            streaming: false,
+          });
+          return;
+        case "tool-call":
+        case "tool-update":
+          upsertToolCall(message.tool);
+          return;
+        case "message-complete":
+        case "session-stopped":
+          markStreamingComplete();
+          setStreaming(false);
+          return;
+        case "error":
+          if (
+            message.message === "Chat session not found" &&
+            sessionRequestRef.current?.type === "resume" &&
+            message.sessionId === sessionRequestRef.current.sessionId
+          ) {
+            clearStoredChatSession();
+            dispatchSessionRequest({
+              type: "create",
+              provider: providerRef.current,
+            });
+            appendItem({
+              id: `session-reset:${Date.now()}`,
+              type: "system",
+              text: "Previous chat session was unavailable. Started a new session.",
+              tone: "info",
+              timestamp: new Date().toISOString(),
+            });
+            return;
+          }
+
+          appendItem({
+            id: `error:${Date.now()}`,
+            type: "system",
+            text: message.message || "Unknown chat error",
+            tone: "error",
+            timestamp: new Date().toISOString(),
+          });
+          markStreamingComplete();
+          setStreaming(false);
+      }
+    };
+
+    socket.onclose = () => {
+      socketRef.current = null;
+      if (disposedRef.current) {
+        setConnectionState("disconnected");
+        return;
+      }
+
+      setConnectionState("reconnecting");
       markStreamingComplete();
       setStreaming(false);
-      setSessionId("");
-    }
+      reconnectTimerRef.current = window.setTimeout(() => {
+        connectSocket();
+      }, 1500);
+    };
+
+    socket.onerror = () => {
+      socket.close();
+    };
   }, [
     announceAssistantMessage,
     appendItem,
+    dispatchSessionRequest,
     markStreamingComplete,
-    provider,
+    queueDefaultSessionRequest,
+    syncSession,
     upsertAssistantMessage,
     upsertToolCall,
   ]);
 
+  const deleteSession = useCallback(async (id: string) => {
+    await fetch(`/api/chat/session/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).catch(() => undefined);
+  }, []);
+
+  const startFreshSession = useEffectEvent(async (nextProvider: ChatProvider) => {
+    const previousSessionId = sessionIdRef.current || getStoredChatSession()?.sessionId || "";
+
+    clearStoredChatSession();
+    sessionIdRef.current = "";
+    sessionRequestRef.current = { type: "create", provider: nextProvider };
+    announcedAssistantIdsRef.current.clear();
+    setTimeline([]);
+    setSessionId("");
+    setSessionCreatedAt(null);
+    setSessionCwd(null);
+    setPendingApprovalId(null);
+    setStreaming(false);
+    markStreamingComplete();
+
+    if (previousSessionId) {
+      void deleteSession(previousSessionId);
+    }
+
+    if (!dispatchSessionRequest({ type: "create", provider: nextProvider })) {
+      connectSocket();
+    }
+  });
+
+  useEffect(() => {
+    disposedRef.current = false;
+    connectSocket();
+
+    return () => {
+      disposedRef.current = true;
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+      }
+      socketRef.current?.close();
+      socketRef.current = null;
+    };
+  }, [connectSocket]);
+
+  useEffect(() => {
+    if (!didMountProviderRef.current) {
+      didMountProviderRef.current = true;
+      return;
+    }
+
+    if (ignoreNextProviderResetRef.current) {
+      ignoreNextProviderResetRef.current = false;
+      return;
+    }
+
+    void startFreshSession(provider);
+  }, [provider]);
+
   const sendMessage = useCallback(async () => {
     const text = input.trim();
+    const activeSessionId = sessionIdRef.current;
+
     if (!text || streaming) {
+      return;
+    }
+
+    if (!activeSessionId) {
+      appendItem({
+        id: `session-wait:${Date.now()}`,
+        type: "system",
+        text: "Connecting to the persistent chat session. Try again in a moment.",
+        tone: "info",
+        timestamp: new Date().toISOString(),
+      });
+      connectSocket();
       return;
     }
 
@@ -286,93 +676,51 @@ export function Chat({
     setInput("");
     setStreaming(true);
 
-    try {
-      const response = await fetch("/api/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: text,
-          projectKey: projectKey || undefined,
-          provider,
-          referencedFiles,
-        }),
-      });
+    const sent = sendSocketMessage({
+      type: "send-message",
+      sessionId: activeSessionId,
+      content: text,
+      referencedFiles,
+    });
 
-      if (!response.ok || !response.body) {
-        appendItem({
-          id: `error:${Date.now()}`,
-          type: "system",
-          text: `Error: ${response.status} ${response.statusText}`,
-          tone: "error",
-          timestamp: new Date().toISOString(),
-        });
-        setStreaming(false);
-        return;
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const envelopes = consumeSseEnvelopes(buffer);
-        buffer = envelopes.rest;
-
-        for (const envelope of envelopes.events) {
-          handleStreamEnvelope(envelope);
-        }
-      }
-
-      if (buffer.trim()) {
-        const envelopes = consumeSseEnvelopes(`${buffer}\n\n`);
-        for (const envelope of envelopes.events) {
-          handleStreamEnvelope(envelope);
-        }
-      }
-    } catch (error) {
+    if (!sent) {
       appendItem({
         id: `error:${Date.now()}`,
         type: "system",
-        text: `Error: ${(error as Error).message}`,
+        text: "Chat socket is disconnected. Reconnecting now.",
         tone: "error",
         timestamp: new Date().toISOString(),
       });
       markStreamingComplete();
       setStreaming(false);
-      setSessionId("");
+      connectSocket();
     }
   }, [
     appendItem,
-    handleStreamEnvelope,
+    connectSocket,
     input,
     markStreamingComplete,
     projectKey,
     provider,
     referencedFiles,
+    sendSocketMessage,
     streaming,
   ]);
 
-  const stopStreaming = useCallback(async () => {
-    if (!sessionId) {
+  const stopStreaming = useCallback(() => {
+    const activeSessionId = sessionIdRef.current;
+    if (!activeSessionId) {
       return;
     }
 
-    await fetch("/api/chat/stop", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sessionId }),
-    }).catch(() => undefined);
+    sendSocketMessage({
+      type: "stop",
+      sessionId: activeSessionId,
+    });
 
     markStreamingComplete();
     setStreaming(false);
-    setSessionId("");
-  }, [markStreamingComplete, sessionId]);
+  }, [markStreamingComplete, sendSocketMessage]);
 
   const resolveApproval = useCallback(
     async (requestId: string, action: "approve" | "reject") => {
@@ -440,6 +788,15 @@ export function Chat({
     }
   };
 
+  const connectionLabel =
+    connectionState === "connected"
+      ? "Connected"
+      : connectionState === "connecting"
+        ? "Connecting"
+        : connectionState === "reconnecting"
+          ? "Reconnecting"
+          : "Disconnected";
+
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#0d1117]">
       <div className="border-b border-[#30363d] bg-[linear-gradient(180deg,#11161d_0%,#0d1117_100%)] px-5 py-4">
@@ -496,6 +853,38 @@ export function Chat({
               {includeCurrentFile ? "Including current file" : "Reference current file"}
             </button>
           ) : null}
+
+          <button
+            type="button"
+            onClick={() => void startFreshSession(provider)}
+            className="rounded-lg border border-[#30363d] bg-[#0d1117] px-3 py-1.5 text-xs text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
+          >
+            New session
+          </button>
+        </div>
+
+        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[#8b949e]">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[#30363d] bg-[#0d1117] px-2.5 py-1">
+            <span
+              className={cn(
+                "size-2 rounded-full",
+                connectionState === "connected"
+                  ? "bg-[#3fb950]"
+                  : connectionState === "disconnected"
+                    ? "bg-[#f85149]"
+                    : "bg-[#d29922]",
+              )}
+            />
+            {connectionLabel}
+          </span>
+
+          <span>
+            Session {sessionId ? "ready" : "pending"}
+            {visibleMessageCount > 0 ? ` • ${visibleMessageCount} messages` : ""}
+          </span>
+
+          {sessionStartedLabel ? <span>Started {sessionStartedLabel}</span> : null}
+          {sessionCwd ? <span className="truncate">cwd: {sessionCwd}</span> : null}
         </div>
       </div>
 
@@ -605,19 +994,26 @@ export function Chat({
             type="button"
             onClick={() => {
               if (streaming) {
-                void stopStreaming();
+                stopStreaming();
               } else {
                 void sendMessage();
               }
             }}
-            disabled={!streaming && input.trim().length === 0}
+            disabled={
+              !streaming &&
+              (input.trim().length === 0 ||
+                connectionState !== "connected" ||
+                sessionId.length === 0)
+            }
             className={cn(
               "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors",
               streaming
                 ? "border-[#6f2f35] bg-[#221116] text-[#f85149] hover:border-[#f85149]"
                 : "border-[#1f6feb] bg-[#1f6feb] text-white hover:bg-[#388bfd]",
               !streaming &&
-                input.trim().length === 0 &&
+                (input.trim().length === 0 ||
+                  connectionState !== "connected" ||
+                  sessionId.length === 0) &&
                 "cursor-not-allowed border-[#30363d] bg-[#161b22] text-[#6e7681]",
             )}
           >
@@ -646,17 +1042,17 @@ function EmptyState({
     <div className="flex min-h-full items-center justify-center">
       <div className="max-w-lg rounded-[32px] border border-[#222a32] bg-[#11161d] px-8 py-10 text-center shadow-[0_24px_80px_rgba(0,0,0,0.25)]">
         <div className="text-4xl">🦞</div>
-        <h2 className="mt-4 text-xl font-semibold text-[#f0f6fc]">Enhanced Workspace Chat</h2>
+        <h2 className="mt-4 text-xl font-semibold text-[#f0f6fc]">Persistent Workspace Chat</h2>
         <p className="mt-2 text-sm leading-7 text-[#8b949e]">
-          Ask about {activeProjectLabel}, inspect tool calls inline, and review proposed file edits
-          before applying them.
+          Continue the same conversation across pages, inspect tool calls inline, and review
+          proposed file edits before applying them.
         </p>
         {currentFilePath ? (
           <p className="mt-2 text-xs text-[#6e7681]">Current file available: {currentFilePath}</p>
         ) : null}
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           {[
-            "Summarize the current project architecture",
+            `Summarize the current state of ${activeProjectLabel}`,
             "Read the active file and explain what it does",
             "Run git status and explain the current working tree",
             "Propose a safe change and show me the diff first",
@@ -676,40 +1072,8 @@ function EmptyState({
   );
 }
 
-function consumeSseEnvelopes(buffer: string) {
-  const parts = buffer.split("\n\n");
-  const rest = parts.pop() ?? "";
-  const events = parts
-    .map(parseSseEnvelope)
-    .filter((entry): entry is StreamEnvelope => entry !== null);
-  return { events, rest };
-}
-
-function parseSseEnvelope(chunk: string): StreamEnvelope | null {
-  const lines = chunk.split("\n");
-  let event = "message";
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      event = line.slice(6).trim();
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trim());
-    }
-  }
-
-  if (dataLines.length === 0) {
-    return null;
-  }
-
-  try {
-    return {
-      event,
-      data: JSON.parse(dataLines.join("\n")),
-    };
-  } catch {
-    return null;
-  }
+function buildChatSocketUrl() {
+  const url = new URL("/ws/chat", window.location.href);
+  url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return url.toString();
 }

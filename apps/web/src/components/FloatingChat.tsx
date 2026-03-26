@@ -103,63 +103,58 @@ export function FloatingChat({
         ) : null}
       </button>
 
-      <div
-        className={cn(
-          "fixed bottom-6 right-6 z-40 origin-bottom-right transition-all duration-200 ease-out motion-reduce:transition-none",
-          isOpen && !isMinimized
-            ? "translate-y-0 scale-100 opacity-100"
-            : "pointer-events-none translate-y-6 scale-[0.98] opacity-0",
-        )}
-      >
-        <section
-          aria-label="Floating chat"
-          className="relative flex h-[min(31.25rem,calc(100vh-6rem))] w-[min(25rem,calc(100vw-5rem))] max-w-[calc(100vw-5rem)] resize flex-col overflow-hidden rounded-2xl border border-[#30363d] bg-[#0d1117]/96 shadow-[0_30px_80px_rgba(1,4,9,0.55)] backdrop-blur-xl"
-        >
-          <div className="flex items-center justify-between gap-3 border-b border-[#30363d] bg-[linear-gradient(180deg,#11161d_0%,#0d1117_100%)] px-4 py-3">
-            <div>
-              <p className="text-sm font-semibold text-[#f0f6fc]">Chat</p>
-              <p className="text-xs text-[#8b949e]">
-                Project-aware assistant available from any page.
-              </p>
+      {isOpen && !isMinimized ? (
+        <div className="fixed bottom-6 right-6 z-40 origin-bottom-right translate-y-0 scale-100 opacity-100 transition-all duration-200 ease-out motion-reduce:transition-none">
+          <section
+            aria-label="Floating chat"
+            className="relative flex h-[min(31.25rem,calc(100vh-6rem))] w-[min(25rem,calc(100vw-5rem))] max-w-[calc(100vw-5rem)] resize flex-col overflow-hidden rounded-2xl border border-[#30363d] bg-[#0d1117]/96 shadow-[0_30px_80px_rgba(1,4,9,0.55)] backdrop-blur-xl"
+          >
+            <div className="flex items-center justify-between gap-3 border-b border-[#30363d] bg-[linear-gradient(180deg,#11161d_0%,#0d1117_100%)] px-4 py-3">
+              <div>
+                <p className="text-sm font-semibold text-[#f0f6fc]">Chat</p>
+                <p className="text-xs text-[#8b949e]">
+                  Project-aware assistant available from any page.
+                </p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Minimize chat"
+                  title="Minimize"
+                  onClick={minimizePanel}
+                  className="inline-flex size-8 items-center justify-center rounded-md text-[#8b949e] transition-colors hover:bg-[#161b22] hover:text-[#e6edf3]"
+                >
+                  <Minus className="size-4" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Close chat"
+                  title="Close"
+                  onClick={closePanel}
+                  className="inline-flex size-8 items-center justify-center rounded-md text-[#8b949e] transition-colors hover:bg-[#161b22] hover:text-[#e6edf3]"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
             </div>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                aria-label="Minimize chat"
-                title="Minimize"
-                onClick={minimizePanel}
-                className="inline-flex size-8 items-center justify-center rounded-md text-[#8b949e] transition-colors hover:bg-[#161b22] hover:text-[#e6edf3]"
-              >
-                <Minus className="size-4" />
-              </button>
-              <button
-                type="button"
-                aria-label="Close chat"
-                title="Close"
-                onClick={closePanel}
-                className="inline-flex size-8 items-center justify-center rounded-md text-[#8b949e] transition-colors hover:bg-[#161b22] hover:text-[#e6edf3]"
-              >
-                <X className="size-4" />
-              </button>
+
+            <div className="min-h-0 flex-1">
+              <Chat
+                initialProjectKey={activeProjectKey ?? undefined}
+                onAssistantMessage={() => {
+                  if (!isOpen || isMinimized) {
+                    setHasUnread(true);
+                  }
+                }}
+              />
             </div>
-          </div>
 
-          <div className="min-h-0 flex-1">
-            <Chat
-              initialProjectKey={activeProjectKey ?? undefined}
-              onAssistantMessage={() => {
-                if (!isOpen || isMinimized) {
-                  setHasUnread(true);
-                }
-              }}
-            />
-          </div>
-
-          <div className="pointer-events-none absolute bottom-2 right-2 text-[10px] uppercase tracking-[0.16em] text-[#6e7681]">
-            Resize
-          </div>
-        </section>
-      </div>
+            <div className="pointer-events-none absolute bottom-2 right-2 text-[10px] uppercase tracking-[0.16em] text-[#6e7681]">
+              Resize
+            </div>
+          </section>
+        </div>
+      ) : null}
     </>
   );
 }
