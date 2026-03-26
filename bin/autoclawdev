@@ -549,8 +549,9 @@ cmd_interactive() {
     clear
     header
 
-    local choice=$(gum choose --height 14 \
+    local choice=$(gum choose --height 15 \
       "▶️   Run Cycles" \
+      "🔨  Build Plan" \
       "🔍  Deep Review" \
       "🔄  Loop (Continuous)" \
       "📁  Projects" \
@@ -564,6 +565,7 @@ cmd_interactive() {
 
     case "$choice" in
       "▶️   Run Cycles")       cmd_run_interactive ;;
+      "🔨  Build Plan")        cmd_build_interactive ;;
       "🔍  Deep Review")       cmd_review_interactive ;;
       "🔄  Loop (Continuous)") cmd_loop_interactive ;;
       "📁  Projects")          cmd_projects_interactive ;;
@@ -576,6 +578,81 @@ cmd_interactive() {
       "🚪  Exit"|"")           clear; exit 0 ;;
     esac
   done
+}
+
+# ── Build Plan (Interactive) ──────────────────────────────────────────
+cmd_build_interactive() {
+  clear
+  header
+  gum style --foreground 242 --bold "  BUILD PLAN"
+  echo ""
+
+  # Pick project
+  local projects=($(get_projects))
+  local choices=()
+  for key in "${projects[@]}"; do
+    local name=$(get_project_name "$key")
+    choices+=("$key — $name")
+  done
+  local selected=$(printf '%s\n' "${choices[@]}" | gum choose --height $((${#choices[@]} + 2)))
+  [ -z "$selected" ] && return
+  local project_key=$(echo "$selected" | cut -d' ' -f1)
+  local project_path=$(get_project_field "$project_key" "path")
+
+  # Find plan files in the project
+  local plan_files=()
+  while IFS= read -r -d '' f; do
+    plan_files+=("$(basename "$f")")
+  done < <(find "$project_path" -maxdepth 3 -name "*PLAN*" -o -name "*plan*" -type f 2>/dev/null | grep -i "\.md$" | head -10 | tr '\n' '\0')
+
+  # Also check docs/
+  while IFS= read -r -d '' f; do
+    local rel=${f#"$project_path/"}
+    plan_files+=("$rel")
+  done < <(find "$project_path/docs" -maxdepth 2 -name "*.md" -type f 2>/dev/null | head -10 | tr '\n' '\0')
+
+  if [ ${#plan_files[@]} -eq 0 ]; then
+    gum style --foreground 203 "  No plan files found in $project_key"
+    echo "  Create a markdown file with ## Phase headings, then run:"
+    echo "  autoclaw build $project_key path/to/plan.md"
+    sleep 3
+    return
+  fi
+
+  echo "  Select a plan file:"
+  local plan_file=$(printf '%s\n' "${plan_files[@]}" | sort -u | gum choose --height $((${#plan_files[@]} + 2)))
+  [ -z "$plan_file" ] && return
+
+  # Pick provider
+  local provider=$(gum choose --header "Provider:" "claude (Opus max)" "codex (GPT-5.4)" "codex-fast (GPT-5.4 fast)")
+  local flag=""
+  case "$provider" in
+    *codex-fast*) flag="--codex-fast" ;;
+    *codex*)      flag="--codex" ;;
+    *)            flag="--claude" ;;
+  esac
+
+  # Check for resume
+  local progress_file="$project_path/.autoclaw/builds/build-progress.md"
+  if [ -f "$progress_file" ]; then
+    local done_count=$(grep -c "^\- \[x\]" "$progress_file" 2>/dev/null || echo 0)
+    if [ "$done_count" -gt 0 ]; then
+      echo ""
+      gum style --foreground 117 "  $done_count phase(s) already completed. Resume from next?"
+      local resume=$(gum choose "Resume from next phase" "Start from beginning" "Pick specific phase")
+      case "$resume" in
+        *"beginning"*) flag="$flag --phase 1" ;;
+        *"specific"*)
+          local phase_num=$(gum input --placeholder "Phase number" --prompt "Start from phase: " --width 10)
+          [ -n "$phase_num" ] && flag="$flag --phase $phase_num"
+          ;;
+      esac
+    fi
+  fi
+
+  echo ""
+  gum style --foreground 114 "Starting build: $project_key / $plan_file"
+  "$REPO_ROOT/scripts/build.sh" "$project_key" "$plan_file" $flag
 }
 
 # ── Deep Review (Interactive) ────────────────────────────────────────
@@ -780,8 +857,9 @@ for line in sys.stdin:
 
   echo ""
 
-  local action=$(gum choose --height 11 \
+  local action=$(gum choose --height 12 \
     "▶️  Run cycles" \
+    "🔨 Build plan" \
     "🔍 Deep review" \
     "🔄 Continuous loop" \
     "🧠 View memory" \
@@ -794,6 +872,15 @@ for line in sys.stdin:
 
   case "$action" in
     "▶️  Run cycles") run_project_interactive "$key" ;;
+    "🔨 Build plan")
+      local plan=$(find "$path" -maxdepth 3 \( -name "*PLAN*" -o -name "*plan*" \) -name "*.md" -type f 2>/dev/null | head -1)
+      if [ -n "$plan" ]; then
+        "$REPO_ROOT/scripts/build.sh" "$key" "$plan"
+      else
+        echo "  No plan files found. Create a markdown file with ## Phase headings."
+        read -rsn1
+      fi
+      ;;
     "🔍 Deep review") "$REPO_ROOT/scripts/deep-review.sh" "$key" ;;
     "🔄 Continuous loop") cmd_wigman "$key" 25 "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}" ;;
     "🧠 View memory")
@@ -2097,6 +2184,7 @@ cmd_help() {
   printf "  $(gum style --foreground $c 'autoclaw run') $(gum style --foreground $p '<project> 3')                   3 full cycles\n"
   printf "  $(gum style --foreground $c 'autoclaw run') $(gum style --foreground $p '<project> -p security')         Single profile only\n"
   printf "  $(gum style --foreground $c 'autoclaw review') $(gum style --foreground $p '<project> [--codex|--codex-fast]') Deep codebase review + fix\n"
+  printf "  $(gum style --foreground $c 'autoclaw build') $(gum style --foreground $p '<project> <plan.md>')        Execute a build plan phase by phase\n"
   printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> [N]')               Continuous full cycles (default 5)\n"
   printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> -p security')        Continuous single profile\n"
   printf "  $(gum style --foreground $c 'autoclaw stop') $(gum style --foreground $p '[project]')                    Stop an active run\n"
@@ -2162,6 +2250,8 @@ case "${1:-}" in
     ;;
   review|deep-review)
     "$REPO_ROOT/scripts/deep-review.sh" "${@:2}" ;;
+  build)
+    "$REPO_ROOT/scripts/build.sh" "${@:2}" ;;
   loop|wigman|ralph)
     shift
     _parse_profile_flag "$@"
