@@ -139,34 +139,114 @@ function parseExecutionPlan(
   return phases;
 }
 
-function parseProgress(
-  markdown: string,
-): { done: string[]; nextSteps: string[]; deferred: string[] } {
+interface ProgressPhase {
+  title: string;
+  status: "completed" | "in-progress";
+  changes: string[];
+  commit?: string;
+  verified: boolean;
+  deployed: boolean;
+}
+
+interface ParsedProgress {
+  phases: ProgressPhase[];
+  nextSteps: string[];
+  deferred: string[];
+  deployNotes: string[];
+}
+
+function parseProgress(markdown: string): ParsedProgress {
   const lines = markdown.split("\n");
-  const done: string[] = [];
+  const phases: ProgressPhase[] = [];
   const nextSteps: string[] = [];
   const deferred: string[] = [];
+  const deployNotes: string[] = [];
   let section = "";
+  let currentPhase: ProgressPhase | null = null;
+
+  const flushPhase = () => {
+    if (currentPhase && currentPhase.changes.length > 0) {
+      phases.push({ ...currentPhase });
+    }
+    currentPhase = null;
+  };
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (trimmed.startsWith("## Done")) {
-      section = "done";
-    } else if (
-      trimmed.startsWith("## Highest-value") ||
-      trimmed.startsWith("## Next")
-    ) {
-      section = "next";
-    } else if (trimmed.startsWith("## Deferred")) {
-      section = "deferred";
-    } else if (trimmed.startsWith("- ") && section) {
+    if (!trimmed) continue;
+
+    // Track top-level sections
+    if (trimmed.startsWith("## Done")) { section = "done"; continue; }
+    if (trimmed.startsWith("## Highest-value") || trimmed.startsWith("## Next")) { flushPhase(); section = "next"; continue; }
+    if (trimmed.startsWith("## Deferred")) { flushPhase(); section = "deferred"; continue; }
+    if (trimmed.startsWith("## Deploy")) { flushPhase(); section = "deploy"; continue; }
+    if (trimmed.startsWith("## Verification") || trimmed.startsWith("## Useful")) { flushPhase(); section = "other"; continue; }
+
+    if (section === "next" && trimmed.startsWith("- ")) {
+      nextSteps.push(trimmed.slice(2));
+      continue;
+    }
+    if (section === "deferred" && trimmed.startsWith("- ")) {
+      deferred.push(trimmed.slice(2));
+      continue;
+    }
+    if (section === "deploy" && trimmed.startsWith("- ")) {
+      deployNotes.push(trimmed.slice(2));
+      continue;
+    }
+
+    if (section !== "done") continue;
+
+    // Inside ## Done — detect phase boundaries
+    if (trimmed.startsWith("- ") && /implemented|committed|deployed|verified|ran mandatory|synthesized|checked run/i.test(trimmed)) {
       const text = trimmed.slice(2);
-      if (section === "done") done.push(text);
-      else if (section === "next") nextSteps.push(text);
-      else if (section === "deferred") deferred.push(text);
+      const isPhaseStart = /implemented phase|committed phase/i.test(text);
+      const isCommit = /committed/i.test(text) && !isPhaseStart;
+      const isVerify = /verified/i.test(text);
+      const isDeploy = /deployed/i.test(text);
+      const isAudit = /audit|synthesized|ran mandatory/i.test(text);
+
+      if (isPhaseStart || isAudit) {
+        flushPhase();
+        // Extract phase name
+        let title = "Setup";
+        const phaseMatch = text.match(/phase\s*(\d+)[^:]*:?\s*(.*)/i);
+        if (phaseMatch) {
+          title = `Phase ${phaseMatch[1]}${phaseMatch[2] ? ": " + phaseMatch[2].replace(/[:—-]\s*$/, "").trim() : ""}`;
+        } else if (isAudit) {
+          title = "Audit & Analysis";
+        } else if (/checked run/i.test(text)) {
+          title = "Baseline Setup";
+        }
+        currentPhase = { title, status: "completed", changes: [], verified: false, deployed: false };
+      }
+
+      if (currentPhase) {
+        if (isCommit) {
+          const commitMatch = text.match(/`([a-f0-9]{7,})`/);
+          if (commitMatch) currentPhase.commit = commitMatch[1];
+        }
+        if (isVerify) currentPhase.verified = true;
+        if (isDeploy) currentPhase.deployed = true;
+      }
+      continue;
+    }
+
+    // Sub-items (indented or just regular - items under current phase)
+    if (trimmed.startsWith("- ") && currentPhase) {
+      const text = trimmed.slice(2);
+      // Skip noise: file paths listed as sub-items, verification commands, commit hashes
+      if (/^`pnpm|^`cd |^`\w{7}`\s|^`apps\/|^`scripts\/|^\.|^result:|^skip reason/i.test(text)) continue;
+      // Clean up backticks for readability
+      const cleaned = text.replace(/`([^`]+)`/g, "$1");
+      if (cleaned.length > 10) {
+        currentPhase.changes.push(cleaned);
+      }
     }
   }
-  return { done, nextSteps, deferred };
+
+  flushPhase();
+  return { phases, nextSteps, deferred, deployNotes };
 }
 
 // ── Severity styling ─────────────────────────────────────────────────
@@ -520,37 +600,82 @@ function ReviewsPage() {
           )}
 
           {activeTab === "progress" && progress && (
-            <div className="space-y-6">
-              {/* Done */}
-              {progress.done.length > 0 && (
+            <div className="space-y-8">
+              {/* Phase timeline */}
+              {progress.phases.length > 0 && (
                 <div>
-                  <h2 className="text-lg font-semibold text-[#3fb950] mb-3 flex items-center gap-2">
-                    <span>Completed</span>
-                    <span className="text-xs bg-[#3fb95020] text-[#3fb950] px-2 py-0.5 rounded-full">
-                      {progress.done.length}
-                    </span>
+                  <h2 className="text-lg font-semibold text-[#e6edf3] mb-4">
+                    What was done
                   </h2>
-                  <div className="space-y-2">
-                    {progress.done.map((item, i) => (
-                      <div
-                        key={i}
-                        className="flex gap-3 p-3 rounded-lg bg-[#3fb95008] border border-[#3fb95020]"
-                      >
-                        <span className="text-[#3fb950] mt-0.5 shrink-0">
-                          ✓
-                        </span>
-                        <span className="text-sm text-[#c9d1d9]">{item}</span>
-                      </div>
-                    ))}
+                  <div className="relative">
+                    {/* Timeline line */}
+                    <div className="absolute left-[18px] top-6 bottom-6 w-0.5 bg-[#30363d]" />
+
+                    <div className="space-y-6">
+                      {progress.phases.map((phase, i) => (
+                        <div key={i} className="relative flex gap-4">
+                          {/* Timeline dot */}
+                          <div className="relative z-10 mt-1.5 shrink-0">
+                            <div className="w-[38px] h-[38px] rounded-full bg-[#3fb95020] border-2 border-[#3fb950] flex items-center justify-center">
+                              <span className="text-[#3fb950] text-sm font-bold">
+                                {i + 1}
+                              </span>
+                            </div>
+                          </div>
+
+                          {/* Phase content */}
+                          <div className="flex-1 pb-2">
+                            <div className="flex items-center gap-3 mb-2">
+                              <h3 className="text-base font-semibold text-[#e6edf3]">
+                                {phase.title}
+                              </h3>
+                              <div className="flex gap-1.5">
+                                {phase.verified && (
+                                  <span className="text-xs bg-[#3fb95020] text-[#3fb950] px-2 py-0.5 rounded-full">
+                                    Verified
+                                  </span>
+                                )}
+                                {phase.deployed && (
+                                  <span className="text-xs bg-[#1f6feb20] text-[#58a6ff] px-2 py-0.5 rounded-full">
+                                    Deployed
+                                  </span>
+                                )}
+                                {phase.commit && (
+                                  <span className="text-xs bg-[#21262d] text-[#8b949e] px-2 py-0.5 rounded-full font-mono">
+                                    {phase.commit.slice(0, 7)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {phase.changes.length > 0 && (
+                              <ul className="space-y-1.5 ml-1">
+                                {phase.changes.map((change, ci) => (
+                                  <li
+                                    key={ci}
+                                    className="flex gap-2 text-sm text-[#c9d1d9]"
+                                  >
+                                    <span className="text-[#3fb950] shrink-0 mt-0.5">
+                                      ✓
+                                    </span>
+                                    <span>{change}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 </div>
               )}
 
-              {/* Next steps */}
+              {/* Up next */}
               {progress.nextSteps.length > 0 && (
                 <div>
                   <h2 className="text-lg font-semibold text-[#d29922] mb-3 flex items-center gap-2">
-                    <span>Up Next</span>
+                    <span>Still to do</span>
                     <span className="text-xs bg-[#d2992220] text-[#d29922] px-2 py-0.5 rounded-full">
                       {progress.nextSteps.length}
                     </span>
@@ -559,12 +684,14 @@ function ReviewsPage() {
                     {progress.nextSteps.map((item, i) => (
                       <div
                         key={i}
-                        className="flex gap-3 p-3 rounded-lg bg-[#d2992208] border border-[#d2992220]"
+                        className="flex gap-3 p-3.5 rounded-lg bg-[#d2992208] border border-[#d2992220]"
                       >
-                        <span className="text-[#d29922] mt-0.5 shrink-0">
+                        <span className="text-[#d29922] mt-0.5 shrink-0 text-lg">
                           →
                         </span>
-                        <span className="text-sm text-[#c9d1d9]">{item}</span>
+                        <span className="text-sm text-[#c9d1d9] leading-relaxed">
+                          {item}
+                        </span>
                       </div>
                     ))}
                   </div>
@@ -575,7 +702,7 @@ function ReviewsPage() {
               {progress.deferred.length > 0 && (
                 <div>
                   <h2 className="text-lg font-semibold text-[#8b949e] mb-3 flex items-center gap-2">
-                    <span>Deferred</span>
+                    <span>Skipped for now</span>
                     <span className="text-xs bg-[#8b949e20] text-[#8b949e] px-2 py-0.5 rounded-full">
                       {progress.deferred.length}
                     </span>
@@ -584,12 +711,14 @@ function ReviewsPage() {
                     {progress.deferred.map((item, i) => (
                       <div
                         key={i}
-                        className="flex gap-3 p-3 rounded-lg bg-[#8b949e08] border border-[#8b949e20]"
+                        className="flex gap-3 p-3.5 rounded-lg bg-[#8b949e08] border border-[#8b949e20]"
                       >
                         <span className="text-[#484f58] mt-0.5 shrink-0">
                           ○
                         </span>
-                        <span className="text-sm text-[#8b949e]">{item}</span>
+                        <span className="text-sm text-[#8b949e] leading-relaxed">
+                          {item}
+                        </span>
                       </div>
                     ))}
                   </div>
