@@ -109,22 +109,20 @@ export function ProjectTabBar() {
             />
           ))
         ) : projectCount > 0 ? (
-          projectList.map((project) => {
+          projectList.map((project, index) => {
             const isActive = navState.activeProjectKey === project.key;
-            const targetSection = isActive && navState.activeProjectSection
-              ? navState.activeProjectSection
-              : readStoredProjectSection(project.key);
+            const targetSection =
+              isActive && navState.activeProjectSection
+                ? navState.activeProjectSection
+                : readStoredProjectSection(project.key);
+            const shortcutLabel = index < 5 ? `Ctrl+${index + 1}` : undefined;
 
             return (
               <button
                 key={project.key}
                 type="button"
                 aria-current={isActive ? "page" : undefined}
-                aria-keyshortcuts={
-                  projectList.findIndex((item) => item.key === project.key) < 5
-                    ? `Ctrl+${projectList.findIndex((item) => item.key === project.key) + 1}`
-                    : undefined
-                }
+                aria-keyshortcuts={shortcutLabel}
                 data-project-active={isActive ? "true" : "false"}
                 title={project.name}
                 className={cn(
