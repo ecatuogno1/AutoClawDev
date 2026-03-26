@@ -332,7 +332,7 @@ import sys
 
 path = sys.argv[1]
 
-def repair_line(line: str) -> str | None:
+def repair_line(line):
     description_marker = '"description":"'
     result_marker = '","result":"'
     description_index = line.find(description_marker)
@@ -850,17 +850,403 @@ tui_pick_log_source() {
   printf "\t\tidle\n"
 }
 
-tui_load_log_lines() {
-  local logfile=$1
-  local limit=${2:-20}
+tui_render_log_panel_data() {
+  local logfile=${1:-}
+  local log_key=${2:-}
+  local log_mode=${3:-idle}
+  local width=${4:-40}
+  local rows=${5:-20}
+  local expfile=""
 
-  if [ ! -f "$logfile" ]; then
-    return
+  if [ -n "$log_key" ] && [ "$log_key" != "latest" ]; then
+    expfile="$WORKSPACE/experiments-${log_key}.jsonl"
   fi
 
+  python3 - "$logfile" "$log_key" "$log_mode" "$width" "$rows" "$expfile" <<'PY'
+import json
+import os
+import re
+import subprocess
+import sys
+from collections import deque
+from datetime import datetime, timezone
+
+logfile, log_key, log_mode, width_raw, rows_raw, expfile = sys.argv[1:7]
+width = max(16, int(width_raw or "40"))
+rows = max(1, int(rows_raw or "20"))
+
+RST = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+GREEN = "\033[38;5;114m"
+YELLOW = "\033[38;5;221m"
+BLUE = "\033[38;5;117m"
+MAGENTA = "\033[38;5;176m"
+CYAN = "\033[38;5;81m"
+RED = "\033[38;5;203m"
+WHITE = "\033[97m"
+GRAY = "\033[38;5;242m"
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][0-9A-Za-z]|\x1b[@-_]")
+LITERAL_ANSI_RE = re.compile(r"\\033\[[0-9;]*m")
+
+AGENT_COLORS = {
+    "Olivia": CYAN,
+    "Jessica": BLUE,
+    "Terry": GREEN,
+    "Jerry": GREEN,
+    "Review": MAGENTA,
+    "Penny": YELLOW,
+    "Validate": WHITE,
+    "Tests": WHITE,
+    "Lint": WHITE,
+    "Commit": RED,
+    "Fix": YELLOW,
+    "Visual": MAGENTA,
+}
+
+
+def strip_ansi(text):
+    text = text.replace("\r", "")
+    text = LITERAL_ANSI_RE.sub("", text)
+    return ANSI_RE.sub("", text)
+
+
+def repair_line(line):
+    description_marker = '"description":"'
+    result_marker = '","result":"'
+    description_index = line.find(description_marker)
+    if description_index < 0:
+        return None
+
+    description_start = description_index + len(description_marker)
+    result_index = line.find(result_marker, description_start)
+    if result_index < 0:
+        return None
+
+    raw_description = line[description_start:result_index]
+    repaired_description = json.dumps(raw_description)[1:-1]
+    return f"{line[:description_start]}{repaired_description}{line[result_index:]}"
+
+
+def parse_jsonl_last(path):
+    if not path or not os.path.exists(path):
+        return None
+    latest = None
+    with open(path, "r", encoding="utf-8", errors="ignore") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line:
+                continue
+            parsed = None
+            for candidate in (line, repair_line(line)):
+                if not candidate:
+                    continue
+                try:
+                    parsed = json.loads(candidate)
+                    break
+                except Exception:
+                    continue
+            if parsed is not None:
+                latest = parsed
+    return latest
+
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def time_ago(value):
+    dt = parse_timestamp(value)
+    if not dt:
+        return "unknown"
+    now = datetime.now(timezone.utc)
+    diff = max(0, int((now - dt).total_seconds()))
+    minutes = diff // 60
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    if days < 7:
+        return f"{days}d ago"
+    weeks = days // 7
+    return f"{weeks}w ago"
+
+
+def badge(label, color):
+    return f"{color}{BOLD}[{label}]{RST}"
+
+
+def colorize_words(text, color="", dim=False):
+    parts = text.split()
+    if not parts:
+        return []
+    prefix = ""
+    if dim:
+        prefix += DIM
+    prefix += color
+    if not prefix:
+        return parts
+    return [f"{prefix}{part}{RST}" for part in parts]
+
+
+def wrap_tokens(tokens, width):
+    lines = []
+    current = []
+    current_len = 0
+
+    for token in tokens:
+        plain = strip_ansi(token)
+        if not plain:
+            continue
+        token_len = len(plain)
+        if current and current_len + 1 + token_len > width:
+            lines.append(" ".join(current))
+            current = [token]
+            current_len = token_len
+        else:
+            current.append(token)
+            current_len = current_len + token_len + (1 if len(current) > 1 else 0)
+
+    if current:
+        lines.append(" ".join(current))
+    return lines or [""]
+
+
+def wrap_plain(text, width, color="", dim=False):
+    words = colorize_words(text, color, dim=dim)
+    if not words:
+        return [""]
+    return wrap_tokens(words, width)
+
+
+def resolve_agent(session_name):
+    session_lower = session_name.lower()
+    if session_lower.startswith("olivia/visual"):
+        return "Visual"
+    if "/" in session_name:
+        return session_name.split("/", 1)[0]
+    return session_name
+
+
+def agent_badge(name):
+    return badge(name, AGENT_COLORS.get(name, WHITE))
+
+
+def format_event(text):
+    trimmed = text.strip()
+    if not trimmed:
+        return []
+
+    match = re.search(r"CYCLE\s+(\d+)\s*/\s*(\d+)(?:\s+[—-]\s*(.*))?$", trimmed)
+    if match:
+        tokens = [
+            f"{CYAN}{BOLD}━━{RST}",
+            f"{CYAN}{BOLD}CYCLE {match.group(1)}/{match.group(2)}{RST}",
+        ]
+        if match.group(3):
+            tokens.extend(colorize_words(match.group(3), GRAY, dim=True))
+        tokens.append(f"{CYAN}{BOLD}━━{RST}")
+        return wrap_tokens(tokens, width)
+
+    match = re.match(r"^Team profile:\s*(.+)$", trimmed, re.IGNORECASE)
+    if match:
+        profile = match.group(1).strip()
+        tokens = [
+            badge(profile, YELLOW),
+            f"{GRAY}{DIM}active profile{RST}",
+        ]
+        return wrap_tokens(tokens, width)
+
+    match = re.match(r"^(?:[^A-Za-z0-9]+)?([A-Za-z]+)\s+\[([^\]]+)\]\s+(.*)$", trimmed)
+    if match:
+        agent = match.group(1)
+        tool = match.group(2)
+        text_body = match.group(3).strip()
+        tokens = [
+            agent_badge(agent),
+            badge(tool, BLUE),
+        ]
+        tokens.extend(colorize_words(text_body or "starting...", BLUE))
+        return wrap_tokens(tokens, width)
+
+    match = re.match(r"^[✓✗]\s+(Done|Fail)\s+([^:]+):\s*(.*)$", trimmed)
+    if match:
+        ok = match.group(1).lower() == "done"
+        agent = match.group(2).strip()
+        text_body = match.group(3).strip() or ("pass" if ok else "fail")
+        tokens = [
+            badge("PASS" if ok else "FAIL", GREEN if ok else RED),
+            agent_badge(agent),
+        ]
+        tokens.extend(colorize_words(text_body, GREEN if ok else RED))
+        return wrap_tokens(tokens, width)
+
+    match = re.match(r"^([✓✗])\s+CYCLE\s+(\d+)\s+(PASSED|FAILED)\b(.*)$", trimmed)
+    if match:
+        ok = match.group(1) == "✓" and match.group(3) == "PASSED"
+        tokens = [
+            badge("PASS" if ok else "FAIL", GREEN if ok else RED),
+            f"{BOLD}{'CYCLE ' + match.group(2)}{RST}",
+        ]
+        tokens.extend(colorize_words((match.group(3) + match.group(4)).strip(), GREEN if ok else RED))
+        return wrap_tokens(tokens, width)
+
+    match = re.match(r"^──\s+(.+?)\s+session\s+──$", trimmed)
+    if match:
+        session_name = match.group(1).strip()
+        tokens = [
+            agent_badge(resolve_agent(session_name)),
+            f"{GRAY}{DIM}session start{RST}",
+        ]
+        return wrap_tokens(tokens, width)
+
+    match = re.match(r"^──\s+end\s+(.+?)\s+──$", trimmed)
+    if match:
+        session_name = match.group(1).strip()
+        tokens = [
+            agent_badge(resolve_agent(session_name)),
+            f"{GRAY}{DIM}session end{RST}",
+        ]
+        return wrap_tokens(tokens, width)
+
+    match = re.match(r"^│\s+([^:]+):\s?(.*)$", trimmed)
+    if match:
+        session_name = match.group(1).strip()
+        body = match.group(2).strip()
+        tokens = [agent_badge(resolve_agent(session_name))]
+        tokens.extend(colorize_words(body or "…", GRAY, dim=True))
+        return wrap_tokens(tokens, width)
+
+    if trimmed.startswith(("Target:", "Criteria:", "Max rounds", "Validation:", "Base branch:", "Integration branch:", "Memory:", "Speed profile:", "Required tools", "Checking toolchain", "Fetching issues", "Found ")):
+        return wrap_plain(trimmed, width, GRAY, dim=True)
+
+    if "Working..." in trimmed:
+        return wrap_plain(trimmed, width, YELLOW)
+
+    if trimmed.startswith("ERROR") or " failed" in trimmed.lower():
+        return wrap_plain(trimmed, width, RED)
+
+    if trimmed.startswith("Done:") or trimmed.startswith("Loop complete:") or trimmed.startswith("Stop signal received"):
+        return wrap_plain(trimmed, width, GREEN)
+
+    if trimmed.isupper():
+        return wrap_plain(trimmed, width, WHITE)
+
+    return wrap_plain(trimmed, width)
+
+
+def read_recent_lines(path, limit):
+    if not path or not os.path.exists(path):
+        return []
+    result = subprocess.run(
+        ["tail", "-n", str(max(1, limit)), path],
+        check=False,
+        capture_output=True,
+    )
+    return result.stdout.splitlines()
+
+
+recent_source_lines = deque(maxlen=260)
+for raw in read_recent_lines(logfile, 260):
+    recent_source_lines.append(strip_ansi(raw.decode("utf-8", errors="replace")))
+
+display_lines = []
+current_profile = ""
+cycle_label = ""
+
+for raw_line in recent_source_lines:
+    plain = raw_line.strip()
+    if not plain:
+        continue
+    profile_match = re.match(r"^Team profile:\s*(.+)$", plain, re.IGNORECASE)
+    if profile_match:
+        current_profile = profile_match.group(1).strip()
+    cycle_match = re.search(r"CYCLE\s+(\d+)\s*/\s*(\d+)", plain)
+    if cycle_match:
+        cycle_label = f"{cycle_match.group(1)}/{cycle_match.group(2)} cycles"
+    display_lines.extend(format_event(plain))
+
+last_experiment = parse_jsonl_last(expfile)
+result = ""
+result_color = GREEN
+summary_bits = []
+
+if last_experiment:
+    result = str(last_experiment.get("result", "")).strip().lower()
+    if result:
+        result_color = GREEN if result == "pass" else RED
+        summary_bits.append(f"{result_color}{BOLD}{result.upper()}{RST}")
+    timestamp = last_experiment.get("timestamp")
+    if timestamp:
+        summary_bits.append(f"{GRAY}{time_ago(timestamp)}{RST}")
+    description = str(last_experiment.get("description", "")).strip()
+else:
+    description = ""
+
+if description:
+    description = re.sub(r"\s+", " ", description).strip()
+    description = re.sub(r"^[\-\*\s]+", "", description)
+
+header_lines = []
+if log_mode == "running":
+    running_bits = [f"{GREEN}{BOLD}Running:{RST}", f"{WHITE}{BOLD}{log_key or 'latest'}{RST}"]
+    if current_profile:
+        running_bits.append(badge(current_profile, YELLOW))
+    if cycle_label:
+        running_bits.append(f"{GRAY}{cycle_label}{RST}")
+    header_lines.append(" ".join(running_bits))
+    header_lines.append(f"{GRAY}Live output auto-scroll · newest lines at bottom{RST}")
+elif log_mode == "latest" and logfile:
+    latest_bits = [f"{DIM}No active runs - latest log:{RST}", f"{WHITE}{log_key or 'latest'}{RST}"]
+    if summary_bits:
+        latest_bits.append("·")
+        latest_bits.extend(summary_bits)
+    header_lines.append(" ".join(latest_bits))
+else:
+    idle_line = f"{DIM}No active runs - press R to start{RST}"
+    if summary_bits:
+        idle_line = f"{idle_line} {GRAY}·{RST} " + " ".join(summary_bits)
+    header_lines.append(idle_line)
+
+if description and log_mode != "running":
+    header_lines.extend(wrap_plain(description[:160], width, GRAY, dim=True)[:2])
+
+header_lines.append("__RULE__Live Run Log")
+body_rows = max(1, rows - len(header_lines))
+body = display_lines[-body_rows:] if display_lines else []
+
+if not body:
+    body = [f"{GRAY}{DIM}Waiting for runner output...{RST}" if log_mode == "running" else f"{GRAY}{DIM}No recent log lines.{RST}"]
+
+for line in header_lines + body[-body_rows:]:
+    print(line)
+PY
+}
+
+tui_load_log_panel() {
+  local selected_key=${1:-}
+  local width=${2:-40}
+  local rows=${3:-20}
+  local log_source log_key logfile log_mode
+
+  log_source=$(tui_pick_log_source "$selected_key")
+  IFS=$'\t' read -r log_key logfile log_mode <<EOF
+$log_source
+EOF
+
   while IFS= read -r line; do
-    TUI_RIGHT_LINES+=("$(tui_strip_ansi "$line")")
-  done < <(tail -n "$limit" "$logfile" 2>/dev/null)
+    TUI_RIGHT_LINES+=("$line")
+  done < <(tui_render_log_panel_data "$logfile" "$log_key" "$log_mode" "$width" "$rows")
 }
 
 tui_render_shell() {
@@ -948,32 +1334,7 @@ EOF
   TUI_LEFT_LINES+=("  [B] Build [S] Stop   [Q] Quit")
   TUI_LEFT_LINES+=("  [1-9] Select  [↑/↓] Move  [Enter] Details")
 
-  local log_source log_key logfile log_mode
-  local status_line log_limit
-  log_source=$(tui_pick_log_source "$selected_key")
-  IFS=$'\t' read -r log_key logfile log_mode <<EOF
-$log_source
-EOF
-
-  if [ "$log_mode" = "running" ]; then
-    status_line="${TUI_GREEN}${TUI_BOLD}Running:${TUI_RESET} ${log_key}"
-  elif [ "$log_mode" = "latest" ] && [ -n "$logfile" ]; then
-    status_line="${TUI_DIM}No active runs - latest log:${TUI_RESET} ${log_key}"
-  else
-    status_line="${TUI_DIM}No active runs - press R to start${TUI_RESET}"
-  fi
-  TUI_RIGHT_LINES+=("$status_line")
-  TUI_RIGHT_LINES+=("")
-
-  log_limit=$((content_rows - 2))
-  [ "$log_limit" -gt 30 ] && log_limit=30
-  [ "$log_limit" -lt 1 ] && log_limit=1
-  if [ -n "$logfile" ] && [ -f "$logfile" ]; then
-    tui_load_log_lines "$logfile" "$log_limit"
-  fi
-  if [ ${#TUI_RIGHT_LINES[@]} -le 2 ]; then
-    TUI_RIGHT_LINES+=("${TUI_DIM}Waiting for runner output...${TUI_RESET}")
-  fi
+  tui_load_log_panel "$selected_key" "$right_inner" "$content_rows"
   while [ ${#TUI_RIGHT_LINES[@]} -lt "$content_rows" ]; do
     TUI_RIGHT_LINES+=("")
   done
@@ -1147,6 +1508,96 @@ cmd_loop_project_interactive() {
   fi
 }
 
+tui_launch_background_cli() {
+  local project_key=$1
+  shift
+
+  if [ -z "$project_key" ]; then
+    return 1
+  fi
+
+  mkdir -p "$WORKSPACE"
+  nohup "$REPO_ROOT/bin/autoclawdev" "$@" </dev/null >/dev/null 2>&1 &
+}
+
+tui_run_project_interactive() {
+  local project_key=$1
+  local name run_type profile cycles passes
+
+  if [ "$(is_running "$project_key")" = "yes" ]; then
+    gum style --foreground 203 "  Already running! Stop first or wait."
+    sleep 2
+    return
+  fi
+
+  name=$(get_project_name "$project_key")
+  run_type=$(gum choose --header "Run type for $name:" \
+    "Full cycle (all 5 profiles)" \
+    "Single profile only")
+  [ -z "$run_type" ] && return
+
+  if [ "$run_type" = "Single profile only" ]; then
+    profile=$(gum choose --header "Profile:" "reliability" "security" "performance" "quality" "issues")
+    [ -z "$profile" ] && return
+    cycles=$(gum choose --header "Cycles:" "1" "3" "5" "10")
+    [ -z "$cycles" ] && return
+    if gum confirm "Run $cycles cycles of $profile on $name in background?"; then
+      echo ""
+      gum style --foreground 114 "  Launching $cycles × $profile on $name..."
+      tui_launch_background_cli "$project_key" run "$project_key" "$cycles" -p "$profile"
+      sleep 1
+    fi
+    return
+  fi
+
+  passes=$(gum choose --header "Full passes:" "1" "2" "3" "5")
+  [ -z "$passes" ] && return
+  if gum confirm "Run $passes full cycle(s) on $name in background?"; then
+    echo ""
+    gum style --foreground 114 "  Launching $passes full cycle(s) on $name..."
+    tui_launch_background_cli "$project_key" run "$project_key" "$passes"
+    sleep 1
+  fi
+}
+
+tui_loop_project_interactive() {
+  local project_key=$1
+  local loop_type profile cycles
+
+  if [ "$(is_running "$project_key")" = "yes" ]; then
+    gum style --foreground 203 "  Already running! Stop first or wait."
+    sleep 2
+    return
+  fi
+
+  clear
+  header
+  gum style --foreground 242 --bold "  CONTINUOUS LOOP"
+  echo ""
+
+  loop_type=$(gum choose --header "Loop type:" \
+    "Full cycles (5 cycles → merge → repeat)" \
+    "Single profile continuous")
+  [ -z "$loop_type" ] && return
+
+  if [ "$loop_type" = "Single profile continuous" ]; then
+    profile=$(gum choose --header "Profile:" "reliability" "security" "performance" "quality" "issues")
+    [ -z "$profile" ] && return
+    cycles=$(gum choose --header "Max cycles:" "10" "25" "50")
+    [ -z "$cycles" ] && return
+    echo ""
+    gum style --foreground 114 "  Launching loop: $project_key / $profile / $cycles cycles..."
+    tui_launch_background_cli "$project_key" loop "$project_key" "$cycles" -p "$profile"
+    sleep 1
+    return
+  fi
+
+  echo ""
+  gum style --foreground 114 "  Launching loop: $project_key (continuous)..."
+  tui_launch_background_cli "$project_key" loop "$project_key"
+  sleep 1
+}
+
 cmd_interactive() {
   if [ ! -t 0 ] || [ ! -t 1 ]; then
     gum style --foreground 203 "Interactive mode requires a terminal."
@@ -1199,12 +1650,12 @@ cmd_interactive() {
         ;;
       r|R)
         tui_suspend_terminal
-        run_project_interactive "${projects[$selected_index]}"
+        tui_run_project_interactive "${projects[$selected_index]}"
         tui_resume_terminal
         ;;
       l|L)
         tui_suspend_terminal
-        cmd_loop_project_interactive "${projects[$selected_index]}"
+        tui_loop_project_interactive "${projects[$selected_index]}"
         tui_resume_terminal
         ;;
       v|V)
@@ -1224,9 +1675,7 @@ cmd_interactive() {
         else
           cmd_stop
         fi
-        echo ""
-        gum style --foreground 238 "  Press any key to continue..."
-        read -rsn1
+        sleep 1
         tui_resume_terminal
         ;;
       [1-9])
