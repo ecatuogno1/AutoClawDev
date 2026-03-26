@@ -579,7 +579,7 @@ function ReviewsPage() {
                   </h2>
                   <div className="space-y-2">
                     {section.findings.map((f, fi) => (
-                      <FindingCard key={fi} finding={f} />
+                      <FindingCard key={`${section.name}-${f.file}-${fi}`} finding={f} />
                     ))}
                   </div>
                 </div>

@@ -132,7 +132,7 @@ cp "$CONFIG_FILE" "$PROJECT_PATH/.autoclaw/config.json"
 
 # Add .autoclaw to gitignore if not already there
 if [ -f "$PROJECT_PATH/.gitignore" ]; then
-  grep -q "\.autoclaw/" "$PROJECT_PATH/.gitignore" 2>/dev/null || echo ".autoclaw/" >> "$PROJECT_PATH/.gitignore"
+  grep -qE '^\/?\.autoclaw\/?$' "$PROJECT_PATH/.gitignore" 2>/dev/null || echo ".autoclaw/" >> "$PROJECT_PATH/.gitignore"
 fi
 
 # Initialize memory

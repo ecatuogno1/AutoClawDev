@@ -56,13 +56,8 @@ export function ExperimentRow({
 
       {/* Tools/agents */}
       <div className="hidden lg:flex items-center gap-1 shrink-0">
-        {(Array.isArray(experiment.tools)
-          ? experiment.tools as string[]
-          : typeof experiment.tools === 'string'
-            ? (experiment.tools as string).split('+')
-            : [] as string[]
-        ).slice(0, 3).map((tool: string, i: number) => (
-          <AgentBadge key={i} agent={tool} />
+        {(experiment.tools ?? []).slice(0, 3).map((tool, i) => (
+          <AgentBadge key={`${tool}-${i}`} agent={tool} />
         ))}
       </div>
 

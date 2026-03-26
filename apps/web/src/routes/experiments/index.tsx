@@ -68,8 +68,8 @@ function ExperimentsPage() {
         <div className="bg-[#161b22] border border-[#30363d] rounded-lg animate-pulse h-96" />
       ) : filtered.length > 0 ? (
         <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
-          {filtered.map((exp, i) => (
-            <ExperimentRow key={i} experiment={exp} showProject />
+          {filtered.map((exp) => (
+            <ExperimentRow key={exp.id} experiment={exp} showProject />
           ))}
         </div>
       ) : (

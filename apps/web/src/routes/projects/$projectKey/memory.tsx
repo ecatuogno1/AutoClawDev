@@ -364,7 +364,7 @@ function MemoryPage() {
             {filteredFindings.length > 0 ? (
               <div className="space-y-2">
                 {filteredFindings.map((f, i) => (
-                  <FindingCard key={i} finding={f} />
+                  <FindingCard key={`${f.title}-${f.directive}-${i}`} finding={f} />
                 ))}
               </div>
             ) : (

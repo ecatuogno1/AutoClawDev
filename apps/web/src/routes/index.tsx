@@ -201,8 +201,8 @@ function CommandCenter() {
           <div className="bg-[#161b22] border border-[#30363d] rounded-lg animate-pulse h-48" />
         ) : experiments && experiments.length > 0 ? (
           <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
-            {experiments.slice(0, 10).map((exp, i) => (
-              <ExperimentRow key={i} experiment={exp} showProject />
+            {experiments.slice(0, 10).map((exp) => (
+              <ExperimentRow key={exp.id} experiment={exp} showProject />
             ))}
           </div>
         ) : (

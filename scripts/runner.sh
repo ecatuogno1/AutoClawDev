@@ -6,6 +6,9 @@
 # ╚══════════════════════════════════════════════════════════════╝
 set -uo pipefail
 
+# ── Portability ──────────────────────────────────────────────────────
+TMPDIR="${TMPDIR:-/tmp}"
+
 # ── Config ───────────────────────────────────────────────────────────
 REPO="${AUTOCLAWDEV_REPO:-}"
 WORKSPACE="${AUTOCLAWDEV_WORKSPACE:-$HOME/.openclaw/workspace/autoresearch}"
@@ -318,7 +321,7 @@ bootstrap_validation_dependencies() {
   [ -n "$install_cmd" ] || return 0
 
   local install_file
-  install_file=$(mktemp /tmp/autoresearch-bootstrap-XXXXXX)
+  install_file=$(mktemp "$TMPDIR/autoresearch-bootstrap-XXXXXX")
   printf "[AUTOCLAWDEV] Bootstrapping validation dependencies in %s\n" "$repo" >&2
   run_command_with_timeout "$DEPENDENCY_BOOTSTRAP_TIMEOUT" "$install_file" "cd '$repo' && $install_cmd"
   local install_exit=$?
@@ -1182,7 +1185,7 @@ store_validation_baseline_for_ref() {
 
   local cache_path temp_path
   cache_path=$(validation_baseline_cache_path "$ref")
-  temp_path=$(mktemp /tmp/autoresearch-validation-baseline-XXXXXX)
+  temp_path=$(mktemp "$TMPDIR/autoresearch-validation-baseline-XXXXXX")
   printf "%s\n" "$summary" > "$temp_path"
   mv "$temp_path" "$cache_path"
 
@@ -1392,7 +1395,7 @@ capture_validation_baseline_for_repo() {
   REPO="$repo"
 
   if [ -n "$TEST_CMD" ]; then
-    test_file=$(mktemp /tmp/autoresearch-baseline-test-XXXXXX)
+    test_file=$(mktemp "$TMPDIR/autoresearch-baseline-test-XXXXXX")
     run_command_with_timeout "$VALIDATION_TIMEOUT" "$test_file" "cd '$REPO' && $TEST_CMD"
     test_exit=$?
     test_output=$(cat "$test_file" 2>/dev/null)
@@ -1400,7 +1403,7 @@ capture_validation_baseline_for_repo() {
   fi
 
   if [ -n "$LINT_CMD" ]; then
-    lint_file=$(mktemp /tmp/autoresearch-baseline-lint-XXXXXX)
+    lint_file=$(mktemp "$TMPDIR/autoresearch-baseline-lint-XXXXXX")
     run_command_with_timeout "$VALIDATION_TIMEOUT" "$lint_file" "cd '$REPO' && $LINT_CMD"
     lint_exit=$?
     lint_output=$(cat "$lint_file" 2>/dev/null)
@@ -1412,7 +1415,7 @@ capture_validation_baseline_for_repo() {
   local baseline_profile_cmd
   baseline_profile_cmd=$(active_profile_validation_command_for_repo "$REPO" "baseline")
   if [ -n "$baseline_profile_cmd" ]; then
-    profile_file=$(mktemp /tmp/autoresearch-baseline-profile-XXXXXX)
+    profile_file=$(mktemp "$TMPDIR/autoresearch-baseline-profile-XXXXXX")
     run_command_with_timeout "$VALIDATION_TIMEOUT" "$profile_file" "cd '$REPO' && $baseline_profile_cmd"
     profile_exit=$?
     profile_output=$(cat "$profile_file" 2>/dev/null)
@@ -1970,12 +1973,12 @@ _call_agent() {
   fi
 
   local out_file
-  out_file=$(mktemp /tmp/autoresearch-agent-XXXXXX) || {
+  out_file=$(mktemp "$TMPDIR/autoresearch-agent-XXXXXX") || {
     printf "ERROR: unable to allocate agent output file\n" >&2
     return 1
   }
   local pipe_dir
-  pipe_dir=$(mktemp -d /tmp/autoresearch-agent-pipe-XXXXXX) || {
+  pipe_dir=$(mktemp -d "$TMPDIR/autoresearch-agent-pipe-XXXXXX") || {
     rm -f "$out_file"
     printf "ERROR: unable to allocate agent pipe directory\n" >&2
     return 1
@@ -2171,7 +2174,7 @@ build_isolated_codex_command() {
   effort_escaped=$(printf '%q' "$reasoning_effort")
 
   cat <<EOF
-cd $repo_escaped && tmp_codex_home=\$(mktemp -d /tmp/autoclawdev-codex-XXXXXX) && cleanup_codex_home(){ rm -rf "\$tmp_codex_home"; } && trap cleanup_codex_home EXIT && if [ ! -f $auth_path_escaped ]; then echo "Missing Codex auth at $HOME/.codex/auth.json"; exit 1; fi && cp $auth_path_escaped "\$tmp_codex_home/auth.json" && python3 - "\$tmp_codex_home/config.toml" $repo_escaped <<'PY'
+cd $repo_escaped && tmp_codex_home=\$(mktemp -d "$TMPDIR/autoclawdev-codex-XXXXXX") && cleanup_codex_home(){ rm -rf "\$tmp_codex_home"; } && trap cleanup_codex_home EXIT && if [ ! -f $auth_path_escaped ]; then echo "Missing Codex auth at $HOME/.codex/auth.json"; exit 1; fi && cp $auth_path_escaped "\$tmp_codex_home/auth.json" && python3 - "\$tmp_codex_home/config.toml" $repo_escaped <<'PY'
 from pathlib import Path
 import sys
 
@@ -2437,7 +2440,7 @@ cleanup_integration_workspace() {
 }
 
 promote_cycle_branch() {
-  local output_file=$(mktemp /tmp/autoresearch-cherry-pick-XXXXXX)
+  local output_file=$(mktemp "$TMPDIR/autoresearch-cherry-pick-XXXXXX")
   local merge_message=${1:-}
   local previous_repo=$REPO
 
@@ -4196,7 +4199,7 @@ $review_response_format")
           phase_emit_start "🧪" "Tests" "direct" "re-running (fix $fix_attempt/$max_fix_attempts)..."
         fi
         if [ -z "$DRY_RUN" ] && [ -n "$effective_test_cmd" ]; then
-          test_file=$(mktemp /tmp/autoresearch-test-XXXXXX)
+          test_file=$(mktemp "$TMPDIR/autoresearch-test-XXXXXX")
           run_command_with_timeout "$VALIDATION_TIMEOUT" "$test_file" "cd '$REPO' && $effective_test_cmd"
           test_exit=$?
           test_output=$(cat "$test_file" 2>/dev/null)
@@ -4220,7 +4223,7 @@ $review_response_format")
         lint_started_at=$(date +%s)
         phase_emit_start "🛡️" "Lint" "direct" "checking..."
         if [ -z "$DRY_RUN" ] && [ -n "$effective_lint_cmd" ]; then
-          lint_file=$(mktemp /tmp/autoresearch-lint-XXXXXX)
+          lint_file=$(mktemp "$TMPDIR/autoresearch-lint-XXXXXX")
           run_command_with_timeout "$VALIDATION_TIMEOUT" "$lint_file" "cd '$REPO' && $effective_lint_cmd"
           lint_exit=$?
           lint_output=$(cat "$lint_file" 2>/dev/null)
@@ -4244,7 +4247,7 @@ $review_response_format")
           phase_emit_start "🧩" "$active_profile_label" "direct" "checking..."
           active_profile_cmd_effective=$(active_profile_validation_command_for_repo "$REPO" "cycle")
           if [ -z "$DRY_RUN" ] && [ -n "$active_profile_cmd_effective" ]; then
-            profile_file=$(mktemp /tmp/autoresearch-profile-XXXXXX)
+            profile_file=$(mktemp "$TMPDIR/autoresearch-profile-XXXXXX")
             local profile_changed_files
             profile_changed_files=$(repo_changed_files "$REPO")
             local profile_changed_files_quoted
@@ -4283,9 +4286,9 @@ $review_response_format")
           visual_started_at=$(date +%s)
           phase_emit_start "👁️" "Visual" "opus" "visual review..."
           if [ -n "$server_html" ] && [ -z "$DRY_RUN" ] && [ -f "$BROWSER_SNAPSHOT_SCRIPT" ] && command_available node; then
-            visual_file=$(mktemp /tmp/autoresearch-visual-XXXXXX)
+            visual_file=$(mktemp "$TMPDIR/autoresearch-visual-XXXXXX")
             (
-              artifact_dir=$(mktemp -d /tmp/autoresearch-browser-XXXXXX)
+              artifact_dir=$(mktemp -d "$TMPDIR/autoresearch-browser-XXXXXX")
               cleanup_artifacts() {
                 [ -n "${artifact_dir:-}" ] && rm -rf "$artifact_dir"
               }

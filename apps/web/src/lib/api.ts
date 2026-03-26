@@ -40,7 +40,7 @@ function buildQueryString(params: Record<string, string | undefined>) {
   const searchParams = new URLSearchParams();
 
   for (const [key, value] of Object.entries(params)) {
-    if (value && value.length > 0) {
+    if (value !== undefined && value !== "") {
       searchParams.set(key, value);
     }
   }
