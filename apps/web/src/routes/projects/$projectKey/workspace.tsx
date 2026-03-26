@@ -45,7 +45,11 @@ function ProjectWorkspacePage() {
       {isLoading ? (
         <div className="flex-1 rounded-xl border border-[#30363d] bg-[#161b22] animate-pulse" />
       ) : project ? (
-        <WorkspaceView projectKey={projectKey} projectName={project.name} />
+        <WorkspaceView
+          projectKey={projectKey}
+          projectName={project.name}
+          projectPath={project.path}
+        />
       ) : (
         <div className="rounded-xl border border-[#30363d] bg-[#161b22] p-12 text-center">
           <p className="text-lg text-[#f85149]">Project not found</p>

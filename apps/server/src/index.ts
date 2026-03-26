@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import { createServer } from "node:http";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -14,6 +15,7 @@ import memoryRouter from "./routes/memory.js";
 import healthRouter from "./routes/health.js";
 import chatRouter from "./routes/chat.js";
 import workspaceRouter from "./routes/workspace.js";
+import { attachTerminalWebSocketServer } from "./terminal/wsTerminalServer.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 4100);
@@ -43,6 +45,9 @@ if (existsSync(webDist)) {
   });
 }
 
-app.listen(PORT, () => {
+const server = createServer(app);
+attachTerminalWebSocketServer(server);
+
+server.listen(PORT, () => {
   console.log(`AutoClawDev server running on http://localhost:${PORT}`);
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { CodeViewer, type WorkspaceFileTarget } from "./CodeViewer";
 import { FileTree } from "./FileTree";
+import { TerminalPanel } from "./TerminalPanel";
 import { useWorkspaceGitStatus } from "@/lib/api";
 import {
   basenameOf,
@@ -15,11 +16,13 @@ const MAX_SIDEBAR_WIDTH = 480;
 interface WorkspaceViewProps {
   projectKey: string;
   projectName: string;
+  projectPath: string;
 }
 
 export function WorkspaceView({
   projectKey,
   projectName,
+  projectPath,
 }: WorkspaceViewProps) {
   const [openFiles, setOpenFiles] = useState<string[]>([]);
   const [activeFile, setActiveFile] = useState<WorkspaceFileTarget | null>(null);
@@ -145,16 +148,12 @@ export function WorkspaceView({
           />
         </div>
 
-        {isTerminalOpen ? (
-          <div className="h-40 border-t border-[#30363d] bg-[#010409] px-4 py-3">
-            <div className="text-xs uppercase tracking-[0.18em] text-[#6e7681]">
-              Terminal
-            </div>
-            <div className="mt-3 rounded-lg border border-dashed border-[#30363d] bg-[#0d1117] px-4 py-6 text-sm text-[#8b949e]">
-              Integrated terminal lands in Phase 3.
-            </div>
-          </div>
-        ) : null}
+        <TerminalPanel
+          open={isTerminalOpen}
+          onOpenChange={setIsTerminalOpen}
+          projectKey={projectKey}
+          projectPath={projectPath}
+        />
 
         <div className="flex items-center gap-3 border-t border-[#30363d] bg-[#010409] px-4 py-2 text-xs text-[#8b949e]">
           <span>Branch: {branchLabel}</span>
