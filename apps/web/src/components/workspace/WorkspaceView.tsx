@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Chat } from "@/components/Chat";
 import { CodeViewer, type WorkspaceFileTarget } from "./CodeViewer";
 import { FileTree } from "./FileTree";
 import { TerminalPanel } from "./TerminalPanel";
@@ -29,6 +30,7 @@ export function WorkspaceView({
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(true);
   const { data: gitStatus } = useWorkspaceGitStatus(projectKey);
 
   useEffect(() => {
@@ -129,23 +131,57 @@ export function WorkspaceView({
                 : "Select a file to open it in the workspace editor."}
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => setIsTerminalOpen((current) => !current)}
-            className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
-          >
-            {isTerminalOpen ? "Hide Terminal" : "Show Terminal"}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setIsChatOpen((current) => !current)}
+              className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
+            >
+              {isChatOpen ? "Hide Chat" : "Show Chat"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsTerminalOpen((current) => !current)}
+              className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
+            >
+              {isTerminalOpen ? "Hide Terminal" : "Show Terminal"}
+            </button>
+          </div>
         </div>
 
         <div className="min-h-0 flex-1 overflow-hidden">
-          <CodeViewer
-            projectKey={projectKey}
-            openFiles={openFiles}
-            activeFile={activeFile}
-            onSelectFile={handleSelectFile}
-            onCloseFile={handleCloseFile}
-          />
+          <div className="flex h-full min-h-0">
+            <div className="min-w-0 flex-1 overflow-hidden">
+              <CodeViewer
+                projectKey={projectKey}
+                openFiles={openFiles}
+                activeFile={activeFile}
+                onSelectFile={handleSelectFile}
+                onCloseFile={handleCloseFile}
+              />
+            </div>
+            {isChatOpen ? (
+              <>
+                <div className="w-px shrink-0 bg-[#30363d]" />
+                <div className="flex min-w-[360px] max-w-[42%] flex-1 flex-col bg-[#0d1117]">
+                  <div className="border-b border-[#30363d] px-4 py-3">
+                    <p className="text-sm font-semibold text-[#e6edf3]">Workspace Chat</p>
+                    <p className="mt-1 text-xs text-[#8b949e]">
+                      Tool-aware chat with project context and inline diff approvals.
+                    </p>
+                  </div>
+                  <div className="min-h-0 flex-1">
+                    <Chat
+                      initialProjectKey={projectKey}
+                      projectKeyLocked
+                      currentFilePath={activeFilePath}
+                      onOpenFile={handleSelectFile}
+                    />
+                  </div>
+                </div>
+              </>
+            ) : null}
+          </div>
         </div>
 
         <TerminalPanel
