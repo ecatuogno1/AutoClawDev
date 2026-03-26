@@ -86,17 +86,58 @@ if [ ! -d "$PROJECT_PATH" ]; then
   exit 1
 fi
 
-# Resolve plan file (relative to project or absolute)
-if [ ! -f "$PLAN_FILE" ]; then
-  if [ -f "$PROJECT_PATH/$PLAN_FILE" ]; then
-    PLAN_FILE="$PROJECT_PATH/$PLAN_FILE"
-  else
-    echo "ERROR: Plan file not found: $PLAN_FILE"
-    exit 1
+# Resolve plan file — check multiple locations:
+# 1. Exact path as given
+# 2. Relative to project root
+# 3. As a build plan folder name in .autoclaw/builds/<name>/plan.md
+# 4. As a build plan folder in .autoclaw/builds/<name>/ (concatenate all .md files)
+PLAN_DIR=""
+if [ -f "$PLAN_FILE" ]; then
+  : # found as-is
+elif [ -f "$PROJECT_PATH/$PLAN_FILE" ]; then
+  PLAN_FILE="$PROJECT_PATH/$PLAN_FILE"
+elif [ -f "$PROJECT_PATH/.autoclaw/builds/$PLAN_FILE/plan.md" ]; then
+  PLAN_DIR="$PROJECT_PATH/.autoclaw/builds/$PLAN_FILE"
+  PLAN_FILE="$PLAN_DIR/plan.md"
+elif [ -d "$PROJECT_PATH/.autoclaw/builds/$PLAN_FILE" ]; then
+  PLAN_DIR="$PROJECT_PATH/.autoclaw/builds/$PLAN_FILE"
+  PLAN_FILE="$PLAN_DIR/plan.md"
+else
+  echo "ERROR: Plan file not found: $PLAN_FILE"
+  echo ""
+  echo "Looked in:"
+  echo "  $PLAN_FILE"
+  echo "  $PROJECT_PATH/$PLAN_FILE"
+  echo "  $PROJECT_PATH/.autoclaw/builds/$PLAN_FILE/plan.md"
+  echo ""
+  # List available build plans
+  local_plans="$PROJECT_PATH/.autoclaw/builds"
+  if [ -d "$local_plans" ]; then
+    echo "Available build plans:"
+    for d in "$local_plans"/*/; do
+      [ -d "$d" ] || continue
+      echo "  $(basename "$d")"
+    done
   fi
+  exit 1
 fi
 
-PLAN_CONTENT="$(cat "$PLAN_FILE")"
+# If we have a plan directory, concatenate all phase files into the plan
+if [ -n "$PLAN_DIR" ] && [ -d "$PLAN_DIR" ]; then
+  # Build a combined plan: plan.md first, then phase-*.md files in order
+  PLAN_CONTENT="$(cat "$PLAN_FILE")"
+  for phase_file in "$PLAN_DIR"/phase-*.md; do
+    [ -f "$phase_file" ] || continue
+    PLAN_CONTENT="${PLAN_CONTENT}
+
+---
+
+$(cat "$phase_file")"
+  done
+  echo "Loaded plan from $PLAN_DIR/ ($(ls "$PLAN_DIR"/phase-*.md 2>/dev/null | wc -l | tr -d ' ') phase files)"
+else
+  PLAN_CONTENT="$(cat "$PLAN_FILE")"
+fi
 
 # ── Extract phases from plan ─────────────────────────────────────────────────
 
@@ -133,11 +174,16 @@ echo ""
 
 # ── Setup ────────────────────────────────────────────────────────────────────
 
-LOG_DIR="$PROJECT_PATH/.autoclaw/builds"
+# Use plan directory for logs if available, otherwise generic builds dir
+if [ -n "$PLAN_DIR" ]; then
+  LOG_DIR="$PLAN_DIR"
+else
+  LOG_DIR="$PROJECT_PATH/.autoclaw/builds"
+fi
 mkdir -p "$LOG_DIR"
 
 STAMP="$(date +"%Y%m%d-%H%M%S")"
-PROGRESS_FILE="$LOG_DIR/build-progress.md"
+PROGRESS_FILE="$LOG_DIR/progress.md"
 META_LOG="$LOG_DIR/build-${STAMP}.meta.txt"
 
 # Read project context files
