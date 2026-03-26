@@ -1587,6 +1587,61 @@ cmd_full_cycle() {
   done
 
   gum style --foreground 114 "  Done: $passes full cycle(s) × ${#FULL_CYCLE_PROFILES[@]} profiles = $total runs"
+
+  # Merge to main and push after full cycle
+  merge_to_main "$project_key"
+}
+
+merge_to_main() {
+  local project_key=$1
+  local repo_path
+  repo_path=$(get_project_field "$project_key" "path" 2>/dev/null)
+  [ -z "$repo_path" ] || [ ! -d "$repo_path/.git" ] && return 0
+
+  local current_branch
+  current_branch=$(git -C "$repo_path" rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+  # If we're already on main, just push
+  if [ "$current_branch" = "main" ] || [ "$current_branch" = "master" ]; then
+    local unpushed
+    unpushed=$(git -C "$repo_path" rev-list "@{upstream}..HEAD" 2>/dev/null | wc -l | tr -d ' ' || echo 0)
+    if [ "$unpushed" -gt 0 ]; then
+      echo ""
+      gum style --foreground 117 "  Pushing $unpushed commit(s) to origin/$current_branch..."
+      if git -C "$repo_path" push origin "$current_branch" 2>/dev/null; then
+        gum style --foreground 114 "  Pushed to origin/$current_branch"
+      else
+        gum style --foreground 203 "  Push failed — run manually: cd $repo_path && git push"
+      fi
+    fi
+    return 0
+  fi
+
+  # If on an integration branch, merge to main and push
+  local main_branch="main"
+  git -C "$repo_path" show-ref --verify --quiet "refs/heads/master" 2>/dev/null && main_branch="master"
+
+  echo ""
+  gum style --foreground 117 "  Merging $current_branch → $main_branch..."
+
+  if git -C "$repo_path" checkout "$main_branch" 2>/dev/null; then
+    if git -C "$repo_path" merge --no-ff "$current_branch" -m "Merge autoclaw cycle: $current_branch" 2>/dev/null; then
+      gum style --foreground 114 "  Merged to $main_branch"
+      if git -C "$repo_path" push origin "$main_branch" 2>/dev/null; then
+        gum style --foreground 114 "  Pushed to origin/$main_branch"
+      else
+        gum style --foreground 203 "  Push failed — run manually"
+      fi
+      # Clean up the integration branch
+      git -C "$repo_path" branch -d "$current_branch" 2>/dev/null || true
+    else
+      gum style --foreground 203 "  Merge conflict — resolve manually"
+      git -C "$repo_path" merge --abort 2>/dev/null || true
+      git -C "$repo_path" checkout "$current_branch" 2>/dev/null || true
+    fi
+  else
+    gum style --foreground 203 "  Could not checkout $main_branch"
+  fi
 }
 
 cmd_run() {
