@@ -713,10 +713,9 @@ cmd_loop_interactive() {
     gum style --foreground 114 "Starting loop: $project_key / $profile / $cycles cycles..."
     cmd_profile_wigman "$profile" "$project_key" "$cycles" "${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}"
   else
-    local runs=$(gum choose --header "Runs (1 run = 5 profiles, merge after each):" "3" "5" "10" "25")
     echo ""
-    gum style --foreground 114 "Starting loop: $project_key / $runs runs (merge to main after each)..."
-    cmd_loop "$project_key" "$runs"
+    gum style --foreground 114 "Starting loop: $project_key (continuous — autoclaw stop $project_key to end)..."
+    cmd_loop "$project_key"
   fi
 }
 
@@ -1646,29 +1645,52 @@ merge_to_main() {
 
 cmd_loop() {
   local project_key=$1
-  local runs=${2:-5}
 
   if [ -z "$project_key" ]; then
-    gum style --foreground 203 "Usage: autoclaw loop <project> [runs]"
+    gum style --foreground 203 "Usage: autoclaw loop <project>"
     return 1
   fi
 
+  local repo_path
+  repo_path=$(get_project_field "$project_key" "path" 2>/dev/null)
+  local halt_file="${repo_path:-.}/.autoclaw/.stop-loop"
   local profiles=${#FULL_CYCLE_PROFILES[@]}
-  local total_cycles=$((runs * profiles))
+  local run_count=0
+
+  # Clean up any stale halt file
+  rm -f "$halt_file" 2>/dev/null
 
   echo ""
-  gum style --foreground 117 --bold "  Loop: $runs runs × $profiles profiles = $total_cycles total cycles"
-  gum style --foreground 242 "  Merge to main after each run."
+  gum style --foreground 117 --bold "  Loop: $project_key — continuous runs until stopped"
+  gum style --foreground 242 "  Each run = $profiles profiles → merge to main"
+  gum style --foreground 242 "  Stop safely: autoclaw stop $project_key"
+  gum style --foreground 242 "  (or create file: touch ${halt_file})"
   echo ""
 
-  for run in $(seq 1 "$runs"); do
-    gum style --foreground 117 --bold "  ━━━ Run $run/$runs ━━━"
+  # Trap Ctrl+C — finish current run, merge, then exit
+  trap 'echo ""; gum style --foreground 221 "  Ctrl+C caught — finishing current run then stopping..."; touch "$halt_file"' INT
+
+  while true; do
+    # Check for stop signal before starting a new run
+    if [ -f "$halt_file" ]; then
+      rm -f "$halt_file" 2>/dev/null
+      echo ""
+      gum style --foreground 114 "  Stop signal received. Loop ended after $run_count run(s)."
+      break
+    fi
+
+    run_count=$((run_count + 1))
+    gum style --foreground 117 --bold "  ━━━ Run $run_count ━━━"
     cmd_full_cycle "$project_key" 1
     # cmd_full_cycle merges to main after each run
+
+    echo ""
+    gum style --foreground 242 "  Run $run_count complete ($((run_count * profiles)) total cycles). Continuing..."
   done
 
+  trap - INT
   echo ""
-  gum style --foreground 114 "  Loop complete: $runs runs ($total_cycles total cycles)"
+  gum style --foreground 114 "  Loop complete: $run_count runs ($((run_count * profiles)) total cycles)"
 }
 
 cmd_run() {
@@ -2107,10 +2129,22 @@ cmd_stop() {
   fi
   [ -z "$key" ] && return
 
+  # Signal the loop to stop after current run finishes
+  local repo_path
+  repo_path=$(get_project_field "$key" "path" 2>/dev/null)
+  if [ -n "$repo_path" ]; then
+    local halt_file="${repo_path}/.autoclaw/.stop-loop"
+    mkdir -p "$(dirname "$halt_file")" 2>/dev/null
+    touch "$halt_file"
+    gum style --foreground 114 "  Stop signal sent to $key"
+    gum style --foreground 242 "  Loop will finish current run, merge to main, then stop."
+  fi
+
+  # Also kill the runner process if there's a lock file
   local lockfile="$WORKSPACE/.lock-${key}"
   if [ -f "$lockfile" ]; then
     local pid=$(cat "$lockfile")
-    kill "$pid" 2>/dev/null && gum style --foreground 114 "  Stopped $key (pid $pid)" || gum style --foreground 203 "  Failed to stop"
+    kill "$pid" 2>/dev/null && gum style --foreground 114 "  Stopped runner (pid $pid)" || true
     rm -f "$lockfile"
   fi
 }
@@ -2267,7 +2301,7 @@ cmd_help() {
   printf "  $(gum style --foreground $c 'autoclaw run') $(gum style --foreground $p '<project> -p security')         Single profile only\n"
   printf "  $(gum style --foreground $c 'autoclaw review') $(gum style --foreground $p '<project> [--codex|--codex-fast]') Deep codebase review + fix\n"
   printf "  $(gum style --foreground $c 'autoclaw build') $(gum style --foreground $p '<project> <plan.md>')        Execute a build plan phase by phase\n"
-  printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> [N]')               N runs (merge to main after each)\n"
+  printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project>')                    Continuous runs until stopped (merge after each)\n"
   printf "  $(gum style --foreground $c 'autoclaw loop') $(gum style --foreground $p '<project> -p security')        Continuous single profile\n"
   printf "  $(gum style --foreground $c 'autoclaw stop') $(gum style --foreground $p '[project]')                    Stop an active run\n"
   echo ""
@@ -2341,8 +2375,8 @@ case "${1:-}" in
       # Single profile loop: autoclaw loop project N -p security
       cmd_profile_wigman "$PARSED_PROFILE" "${PARSED_ARGS[0]:-}" "${PARSED_ARGS[1]:-25}" "${PARSED_ARGS[2]:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}"
     else
-      # Full cycle loop: 5 full cycles → merge → repeat
-      cmd_loop "${PARSED_ARGS[0]:-}" "${PARSED_ARGS[1]:-5}"
+      # Full cycle loop: continuous runs until stopped
+      cmd_loop "${PARSED_ARGS[0]:-}"
     fi
     ;;
   stop)      cmd_stop "${2:-}" ;;
