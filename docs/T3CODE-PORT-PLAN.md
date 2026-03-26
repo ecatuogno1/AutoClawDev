@@ -157,3 +157,47 @@ tailwind-merge                    # Tailwind class merging
 - Start with read-only features (view files, view diffs) before write features (edit, commit).
 - Each phase should be independently deployable and useful.
 - The existing chat component (`/chat` route) can be upgraded incrementally.
+
+## T3Code Mapper Agent Results (2026-03-26)
+
+### Critical Finding: Same Stack
+T3Code uses the EXACT same stack as AutoClawDev:
+- Vite 8 + React 19 + TanStack Router + TanStack Query + Tailwind 4 + Zustand
+- No framework translation needed — components can be copied with minimal changes
+
+### NOT Monaco — Uses Lexical
+T3Code does NOT use Monaco editor. It uses **Lexical** (@lexical/react) for the prompt composer.
+Code viewing relies on markdown rendering + @pierre/diffs for diffs.
+
+### Backend: Effect-TS + WebSocket RPC
+T3Code server uses Effect-TS layers (functional DI) and WebSocket-based JSON-RPC, not REST.
+AutoClawDev server is plain Express. Options:
+- Option A: Add WebSocket support to Express server (ws library)
+- Option B: Port to REST endpoints (simpler but loses real-time push)
+- Recommended: Option A for terminal, REST for file/git operations
+
+### Reusability Matrix
+- **Direct copy (70%)**: Zustand stores, utility functions, business logic, most UI components
+- **Minor tweaks (20%)**: Route files (same router), component imports, theme tokens
+- **Rewrite (10%)**: Effect-TS backend layers → plain Express, WebSocket transport setup
+
+### Key Files to Copy First
+**Frontend (copy directly):**
+- `src/store.ts` → app state (projects, threads)
+- `src/composerDraftStore.ts` → draft message state
+- `src/terminalStateStore.ts` → terminal UI state
+- `src/session-logic.ts` → message derivation
+- `src/composer-logic.ts` → prompt parsing
+- `src/components/ui/*` → 30+ headless UI components
+- `src/components/ChatView.tsx` → main chat container
+- `src/components/Sidebar.tsx` → navigation sidebar
+- `src/components/DiffPanel.tsx` → diff viewer
+- `src/components/ThreadTerminalDrawer.tsx` → terminal
+- `src/components/chat/MessagesTimeline.tsx` → message display
+- `src/components/chat/ChangedFilesTree.tsx` → file tree
+
+**Backend (adapt from Effect-TS to Express):**
+- `terminal/` → PTY management (need node-pty or similar)
+- `git/` → git operations (can use execSync like workspace.ts already does)
+- `orchestration/` → command/event handling (simplify to Express routes)
+- `workspaceEntries.ts` → file listing (already built in workspace.ts)
