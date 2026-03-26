@@ -4,7 +4,6 @@ import { useActiveRuns } from "@/lib/api";
 const navItems = [
   { to: "/", label: "Command Center", icon: "grid" },
   { to: "/chat", label: "Chat", icon: "chat" },
-  { to: "/workspace", label: "Workspace", icon: "code" },
   { to: "/projects", label: "Projects", icon: "folder" },
   { to: "/experiments", label: "Experiments", icon: "flask" },
   { to: "/live", label: "Live", icon: "terminal" },
@@ -25,8 +24,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const routerState = useRouterState();
   const currentPath = routerState.location.pathname;
   const { data: activeRuns } = useActiveRuns();
-  const isWorkspaceRoute = currentPath.startsWith("/workspace");
-
   return (
     <div className="flex h-screen overflow-hidden">
       {/* Sidebar */}
@@ -84,7 +81,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main content */}
-      <main className={`flex-1 bg-[#0d1117] ${isWorkspaceRoute ? "overflow-hidden" : "overflow-auto"}`}>
+      <main className="flex-1 overflow-auto bg-[#0d1117]">
         {children}
       </main>
     </div>
