@@ -510,21 +510,24 @@ $(cat "$PROGRESS_FILE" 2>/dev/null || echo "First phase — no prior progress.")
 
 Implement ${PHASE_NAME} now. Do not stop until all criteria pass."
 
-    # Provider command
+    # Provider command — MUST use non-interactive mode so the process exits when done
     case "$PROVIDER" in
       claude)
-        CMD=(claude --model opus --effort max --dangerously-skip-permissions --verbose --chrome --name "build-${PROJECT_KEY}-p${PHASE_NUM}")
+        # Claude --print mode: sends prompt, prints response, exits
+        CMD=(claude --print --model opus --effort max --dangerously-skip-permissions --verbose)
         ;;
       codex)
-        CMD=(codex -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
+        # Codex exec mode: non-interactive, exits when done
+        CMD=(codex exec -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
         ;;
       codex-fast)
-        CMD=(codex -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
+        CMD=(codex exec -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
         ;;
     esac
 
-    # Run the AI session
-    script -q "$TTY_LOG" "${CMD[@]}" "$PROMPT"
+    # Run the AI session (non-interactive — logs to file, exits when done)
+    echo "  Running ${PROVIDER}..."
+    "${CMD[@]}" "$PROMPT" 2>&1 | tee "$TTY_LOG"
 
     # Verify
     echo ""
