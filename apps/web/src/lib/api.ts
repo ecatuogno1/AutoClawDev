@@ -10,6 +10,7 @@ import type {
   DeepReviewDetail,
   ProjectMemory,
   WorkspaceDirectoryListing,
+  WorkspaceFileContent,
   WorkspaceGitStatus,
 } from "@/types";
 
@@ -177,6 +178,28 @@ export function useWorkspaceFiles(
     staleTime: 30000,
   });
 }
+
+export function useWorkspaceFileContent(
+  projectKey: string,
+  path?: string | null,
+  enabled = true,
+) {
+  return useQuery<WorkspaceFileContent>({
+    queryKey: ["workspace", "file", projectKey, path ?? null],
+    queryFn: () =>
+      fetchJSON(
+        `/workspace/file${buildQueryString({
+          project: projectKey,
+          path: path ?? undefined,
+        })}`,
+      ),
+    enabled: enabled && Boolean(path),
+    staleTime: 10000,
+  });
+}
+
+export const useFileTree = useWorkspaceFiles;
+export const useFileContent = useWorkspaceFileContent;
 
 export function useWorkspaceGitStatus(projectKey: string, enabled = true) {
   return useQuery<WorkspaceGitStatus>({

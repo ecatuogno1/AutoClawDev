@@ -171,6 +171,14 @@ export interface WorkspaceDirectoryListing {
   entries: WorkspaceFileEntry[];
 }
 
+export interface WorkspaceFileContent {
+  path: string;
+  name: string;
+  content: string;
+  language: string;
+  size: number;
+}
+
 export interface WorkspaceGitFileStatus {
   status: string;
   path: string;

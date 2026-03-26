@@ -1,6 +1,11 @@
 import { useEffect, useState } from "react";
+import { CodeViewer, type WorkspaceFileTarget } from "./CodeViewer";
 import { FileTree } from "./FileTree";
 import { useWorkspaceGitStatus } from "@/lib/api";
+import {
+  basenameOf,
+  getLanguageLabel,
+} from "@/components/workspace/filePresentation";
 
 const SIDEBAR_WIDTH_KEY = "autoclaw.workspace.sidebarWidth";
 const DEFAULT_SIDEBAR_WIDTH = 250;
@@ -16,7 +21,8 @@ export function WorkspaceView({
   projectKey,
   projectName,
 }: WorkspaceViewProps) {
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [openFiles, setOpenFiles] = useState<string[]>([]);
+  const [activeFile, setActiveFile] = useState<WorkspaceFileTarget | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
   const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
   const [isTerminalOpen, setIsTerminalOpen] = useState(false);
@@ -38,12 +44,139 @@ export function WorkspaceView({
     });
   };
 
-  const handleSelectFile = (path: string) => {
-    setSelectedFile(path);
-    console.info("[workspace] selected file", path);
+  const handleSelectFile = (target: string | WorkspaceFileTarget) => {
+    const nextTarget =
+      typeof target === "string"
+        ? parseWorkspaceFileTarget(target)
+        : {
+            path: target.path,
+            line: target.line ?? null,
+          };
+
+    setOpenFiles((current) =>
+      current.includes(nextTarget.path) ? current : [...current, nextTarget.path],
+    );
+    setActiveFile(nextTarget);
+    expandAncestorDirectories(nextTarget.path, setExpandedDirs);
   };
 
-  const handleResizeStart = (event: React.MouseEvent<HTMLDivElement>) => {
+  const handleCloseFile = (path: string) => {
+    setOpenFiles((current) => {
+      const index = current.indexOf(path);
+      if (index === -1) {
+        return current;
+      }
+
+      const next = current.filter((entry) => entry !== path);
+      setActiveFile((currentActive) => {
+        if (currentActive?.path !== path) {
+          return currentActive;
+        }
+
+        const fallbackPath = next[index] ?? next[index - 1] ?? null;
+        return fallbackPath ? { path: fallbackPath, line: null } : null;
+      });
+      return next;
+    });
+  };
+
+  const branchLabel = gitStatus?.branch || "unknown";
+  const activeFilePath = activeFile?.path ?? null;
+
+  return (
+    <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-[#30363d] bg-[#0d1117]">
+      <div
+        className="flex min-h-0 shrink-0 flex-col border-r border-[#30363d] bg-[#010409]"
+        style={{ width: `${sidebarWidth}px` }}
+      >
+        <div className="border-b border-[#30363d] px-4 py-3">
+          <div className="text-sm font-semibold text-[#e6edf3]">Workspace</div>
+          <div className="mt-1 text-xs text-[#8b949e]">{projectName}</div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          <FileTree
+            projectKey={projectKey}
+            activeFile={activeFilePath}
+            expandedDirs={expandedDirs}
+            onSelectFile={handleSelectFile}
+            onToggleDir={handleToggleDir}
+          />
+        </div>
+      </div>
+
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize workspace sidebar"
+        className="group relative w-1 shrink-0 cursor-col-resize bg-[#0d1117]"
+        onMouseDown={handleResizeStart(sidebarWidth, setSidebarWidth)}
+      >
+        <div className="absolute inset-y-0 left-[-3px] right-[-3px] group-hover:bg-[#58a6ff20]" />
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center justify-between border-b border-[#30363d] px-4 py-3">
+          <div className="min-w-0">
+            <div className="truncate text-sm font-medium text-[#e6edf3]">
+              {activeFilePath ?? "No file selected"}
+            </div>
+            <div className="mt-1 text-xs text-[#8b949e]">
+              {activeFilePath
+                ? `Viewing ${basenameOf(activeFilePath)} in the workspace editor.`
+                : "Select a file to open it in the workspace editor."}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsTerminalOpen((current) => !current)}
+            className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
+          >
+            {isTerminalOpen ? "Hide Terminal" : "Show Terminal"}
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <CodeViewer
+            projectKey={projectKey}
+            openFiles={openFiles}
+            activeFile={activeFile}
+            onSelectFile={handleSelectFile}
+            onCloseFile={handleCloseFile}
+          />
+        </div>
+
+        {isTerminalOpen ? (
+          <div className="h-40 border-t border-[#30363d] bg-[#010409] px-4 py-3">
+            <div className="text-xs uppercase tracking-[0.18em] text-[#6e7681]">
+              Terminal
+            </div>
+            <div className="mt-3 rounded-lg border border-dashed border-[#30363d] bg-[#0d1117] px-4 py-6 text-sm text-[#8b949e]">
+              Integrated terminal lands in Phase 3.
+            </div>
+          </div>
+        ) : null}
+
+        <div className="flex items-center gap-3 border-t border-[#30363d] bg-[#010409] px-4 py-2 text-xs text-[#8b949e]">
+          <span>Branch: {branchLabel}</span>
+          <span className="text-[#30363d]">|</span>
+          <span className="truncate">File: {activeFilePath ?? "None"}</span>
+          <span className="text-[#30363d]">|</span>
+          <span>
+            Language: {activeFilePath ? getLanguageLabel(inferLanguageFromPath(activeFilePath)) : "N/A"}
+          </span>
+          <span className="text-[#30363d]">|</span>
+          <span className="truncate">Project: {projectName}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function handleResizeStart(
+  sidebarWidth: number,
+  setSidebarWidth: React.Dispatch<React.SetStateAction<number>>,
+) {
+  return (event: React.MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
     const startX = event.clientX;
     const startWidth = sidebarWidth;
@@ -65,112 +198,66 @@ export function WorkspaceView({
     window.addEventListener("mousemove", handleMouseMove);
     window.addEventListener("mouseup", handleMouseUp);
   };
+}
 
-  const branchLabel = gitStatus?.branch || "unknown";
+function parseWorkspaceFileTarget(input: string): WorkspaceFileTarget {
+  const match = input.match(/^(.*?):(\d+)(?::(\d+))?$/);
+  if (!match?.[1]) {
+    return { path: input, line: null };
+  }
 
-  return (
-    <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-[#30363d] bg-[#0d1117]">
-      <div
-        className="flex min-h-0 shrink-0 flex-col border-r border-[#30363d] bg-[#010409]"
-        style={{ width: `${sidebarWidth}px` }}
-      >
-        <div className="border-b border-[#30363d] px-4 py-3">
-          <div className="text-sm font-semibold text-[#e6edf3]">Workspace</div>
-          <div className="mt-1 text-xs text-[#8b949e]">{projectName}</div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          <FileTree
-            projectKey={projectKey}
-            selectedFile={selectedFile}
-            expandedDirs={expandedDirs}
-            onSelectFile={handleSelectFile}
-            onToggleDir={handleToggleDir}
-          />
-        </div>
-      </div>
+  return {
+    path: match[1],
+    line: Number.parseInt(match[2] ?? "", 10) || null,
+  };
+}
 
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize workspace sidebar"
-        className="group relative w-1 shrink-0 cursor-col-resize bg-[#0d1117]"
-        onMouseDown={handleResizeStart}
-      >
-        <div className="absolute inset-y-0 left-[-3px] right-[-3px] group-hover:bg-[#58a6ff20]" />
-      </div>
+function expandAncestorDirectories(
+  path: string,
+  setExpandedDirs: React.Dispatch<React.SetStateAction<Set<string>>>,
+) {
+  const segments = path.split("/");
+  if (segments.length <= 1) {
+    return;
+  }
 
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-[#30363d] px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-[#e6edf3]">
-              {selectedFile ?? "No file selected"}
-            </div>
-            <div className="mt-1 text-xs text-[#8b949e]">
-              {selectedFile
-                ? "File viewer arrives in Phase 2."
-                : "Select a file to view its contents here."}
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsTerminalOpen((current) => !current)}
-            className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
-          >
-            {isTerminalOpen ? "Hide Terminal" : "Show Terminal"}
-          </button>
-        </div>
+  setExpandedDirs((current) => {
+    const next = new Set(current);
+    for (let index = 1; index < segments.length; index += 1) {
+      next.add(segments.slice(0, index).join("/"));
+    }
+    return next;
+  });
+}
 
-        <div className="min-h-0 flex-1 overflow-auto">
-          {selectedFile ? (
-            <div className="flex h-full min-h-[380px] items-center justify-center px-8 py-12">
-              <div className="max-w-xl rounded-2xl border border-[#30363d] bg-[#161b22] px-8 py-10 text-center">
-                <div className="text-4xl">📄</div>
-                <div className="mt-4 break-all text-base font-semibold text-[#e6edf3]">
-                  {selectedFile}
-                </div>
-                <p className="mt-2 text-sm text-[#8b949e]">
-                  Phase 1 wires file selection and layout shell. Phase 2 adds the
-                  code viewer.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <div className="flex h-full min-h-[380px] items-center justify-center px-8 py-12">
-              <div className="max-w-md rounded-2xl border border-dashed border-[#30363d] bg-[#161b22]/60 px-8 py-10 text-center">
-                <div className="text-4xl">🛠️</div>
-                <div className="mt-4 text-xl font-semibold text-[#e6edf3]">
-                  Select a file to view
-                </div>
-                <p className="mt-2 text-sm text-[#8b949e]">
-                  Browse the project tree on the left to start working in this
-                  project workspace.
-                </p>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {isTerminalOpen && (
-          <div className="h-40 border-t border-[#30363d] bg-[#010409] px-4 py-3">
-            <div className="text-xs uppercase tracking-[0.18em] text-[#6e7681]">
-              Terminal
-            </div>
-            <div className="mt-3 rounded-lg border border-dashed border-[#30363d] bg-[#0d1117] px-4 py-6 text-sm text-[#8b949e]">
-              Integrated terminal lands in Phase 3.
-            </div>
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 border-t border-[#30363d] bg-[#010409] px-4 py-2 text-xs text-[#8b949e]">
-          <span>Branch: {branchLabel}</span>
-          <span className="text-[#30363d]">|</span>
-          <span className="truncate">File: {selectedFile ?? "None"}</span>
-          <span className="text-[#30363d]">|</span>
-          <span className="truncate">Project: {projectName}</span>
-        </div>
-      </div>
-    </div>
-  );
+function inferLanguageFromPath(path: string) {
+  const extension = path.split(".").pop()?.toLowerCase();
+  switch (extension) {
+    case "ts":
+    case "tsx":
+      return "typescript";
+    case "js":
+    case "jsx":
+      return "javascript";
+    case "json":
+      return "json";
+    case "md":
+      return "markdown";
+    case "css":
+      return "css";
+    case "html":
+      return "html";
+    case "yml":
+    case "yaml":
+      return "yaml";
+    case "py":
+      return "python";
+    case "sh":
+    case "zsh":
+      return "bash";
+    default:
+      return "plaintext";
+  }
 }
 
 function clampSidebarWidth(width: number) {
