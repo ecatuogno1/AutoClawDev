@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type Router as ExpressRouter } from "express";
 import { readdir, readFile, writeFile, stat, mkdir } from "node:fs/promises";
-import { basename, extname, join, relative } from "node:path";
+import { basename, dirname, extname, join, relative } from "node:path";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -305,7 +305,7 @@ router.post("/file", async (req: Request, res: Response) => {
   }
 
   try {
-    await mkdir(join(resolved, ".."), { recursive: true });
+    await mkdir(dirname(resolved), { recursive: true });
     await writeFile(resolved, content, "utf-8");
     return res.json({ ok: true, path: filePath });
   } catch (err) {

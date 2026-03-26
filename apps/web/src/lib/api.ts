@@ -1,3 +1,4 @@
+import { useCallback, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
   ProjectWithStats,
@@ -282,9 +283,11 @@ export function useWorkspaceGitCommit(projectKey: string) {
 
 // SSE hook
 export function useSSE(onEvent: (event: { type: string; data: unknown }) => void) {
-  const eventSourceRef = { current: null as EventSource | null };
+  const eventSourceRef = useRef<EventSource | null>(null);
+  const onEventRef = useRef(onEvent);
+  onEventRef.current = onEvent;
 
-  const connect = () => {
+  const connect = useCallback(() => {
     if (eventSourceRef.current) return;
     const es = new EventSource(`${BASE}/events`);
     eventSourceRef.current = es;
@@ -294,7 +297,7 @@ export function useSSE(onEvent: (event: { type: string; data: unknown }) => void
       es.addEventListener(type, (e) => {
         try {
           const data = JSON.parse((e as MessageEvent).data);
-          onEvent({ type, data });
+          onEventRef.current({ type, data });
         } catch {
           // ignore parse errors
         }
@@ -304,15 +307,14 @@ export function useSSE(onEvent: (event: { type: string; data: unknown }) => void
     es.onerror = () => {
       es.close();
       eventSourceRef.current = null;
-      // Reconnect after 3 seconds
-      setTimeout(connect, 3000);
+      setTimeout(() => connect(), 3000);
     };
-  };
+  }, []);
 
-  const disconnect = () => {
+  const disconnect = useCallback(() => {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
-  };
+  }, []);
 
   return { connect, disconnect };
 }

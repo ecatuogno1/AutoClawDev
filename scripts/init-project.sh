@@ -100,15 +100,16 @@ fi
 mkdir -p "$PROJECTS_DIR"
 CONFIG_FILE="$PROJECTS_DIR/${PROJECT_KEY}.json"
 
-python3 -c "
-import json
+python3 - "$PROJECT_NAME" "$PROJECT_PATH" "$DESCRIPTION" "$PM" "$TEST_CMD" "$LINT_CMD" "$GH_REPO" "$CONFIG_FILE" <<'PYEOF'
+import json, sys
+name, path, desc, pm, test_cmd, lint_cmd, gh_repo, config_file = sys.argv[1:9]
 config = {
-    'name': '$PROJECT_NAME',
-    'path': '$PROJECT_PATH',
-    'description': '$DESCRIPTION',
-    'package_manager': '$PM',
-    'test_cmd': '$TEST_CMD',
-    'lint_cmd': '$LINT_CMD',
+    'name': name,
+    'path': path,
+    'description': desc,
+    'package_manager': pm,
+    'test_cmd': test_cmd,
+    'lint_cmd': lint_cmd,
     'focus': [],
     'team_profile': 'reliability',
     'speed_profile': 'balanced',
@@ -116,12 +117,12 @@ config = {
     'default_cycles': 5,
     'max_parallel_cycles': 1,
 }
-if '$GH_REPO':
-    config['gh_repo'] = '$GH_REPO'
-with open('$CONFIG_FILE', 'w') as f:
+if gh_repo:
+    config['gh_repo'] = gh_repo
+with open(config_file, 'w') as f:
     json.dump(config, f, indent=2)
     f.write('\n')
-"
+PYEOF
 
 # Create .autoclaw dir in project
 mkdir -p "$PROJECT_PATH/.autoclaw"/{memory,reviews,builds,cycles,runs}

@@ -164,6 +164,7 @@ const externalRunObservers = new Map<string, ExternalRunObserver>();
 export const runEvents = new EventEmitter();
 
 function resolveExternalRunCycles(pid: number): number {
+  if (!Number.isInteger(pid) || pid <= 0) return 1;
   try {
     const command = execSync(`ps -p ${pid} -o command=`, {
       encoding: "utf-8",
@@ -471,8 +472,8 @@ export async function startRun(project: string, cycles: number): Promise<boolean
 export function stopRun(project: string): boolean {
   const run = activeRuns.get(project);
   if (!run) return false;
-  run.process.kill("SIGTERM");
   activeRuns.delete(project);
+  run.process.kill("SIGTERM");
   runEvents.emit("stop", { project, timestamp: new Date().toISOString() });
   return true;
 }

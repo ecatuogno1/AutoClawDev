@@ -38,7 +38,14 @@ router.get("/:key/memory", async (req, res) => {
   const memDir = resolveMemoryDir(req.params.key, project.path);
 
   const projectMemoryRaw = await safeReadFile(join(memDir, "project-memory.json"));
-  const projectMemory = projectMemoryRaw ? JSON.parse(projectMemoryRaw) : null;
+  let projectMemory: Record<string, unknown> | null = null;
+  if (projectMemoryRaw) {
+    try {
+      projectMemory = JSON.parse(projectMemoryRaw);
+    } catch {
+      return res.status(500).json({ error: "Corrupted project-memory.json" });
+    }
+  }
 
   const findingMemory = await safeReadJsonl(join(memDir, "finding-memory.jsonl"));
   const fileMemory = await safeReadJsonl(join(memDir, "file-memory.jsonl"));
@@ -52,21 +59,21 @@ router.get("/:key/memory", async (req, res) => {
     : [];
 
   // Parse findings into structured format
-  const findings = findingMemory.map((f: any) => ({
-    title: f.title || f.finding || f.description || "",
-    directive: f.directive || "unknown",
-    domain: f.domain || "unknown",
-    status: f.status || "unknown",
+  const findings = findingMemory.map((f: Record<string, unknown>) => ({
+    title: (f.title || f.finding || f.description || "") as string,
+    directive: (f.directive || "unknown") as string,
+    domain: (f.domain || "unknown") as string,
+    status: (f.status || "unknown") as string,
     targetFiles: Array.isArray(f.target_files) ? f.target_files : [],
-    firstSeenExp: f.first_seen_exp || null,
-    lastSeenExp: f.last_seen_exp || null,
-    resolutionCommit: f.resolution_commit || null,
-    notes: f.notes || null,
-    updatedAt: f.updated_at || null,
+    firstSeenExp: (f.first_seen_exp || null) as string | null,
+    lastSeenExp: (f.last_seen_exp || null) as string | null,
+    resolutionCommit: (f.resolution_commit || null) as string | null,
+    notes: (f.notes || null) as string | null,
+    updatedAt: (f.updated_at || null) as string | null,
   }));
 
-  const openFindings = findings.filter((f: any) => f.status === "open");
-  const resolvedFindings = findings.filter((f: any) => f.status !== "open");
+  const openFindings = findings.filter((f) => f.status === "open");
+  const resolvedFindings = findings.filter((f) => f.status !== "open");
 
   return res.json({
     project: req.params.key,
