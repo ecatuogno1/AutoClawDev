@@ -3,6 +3,8 @@ import tailwindcss from "@tailwindcss/vite";
 import { TanStackRouterVite } from "@tanstack/router-plugin/vite";
 import { resolve } from "node:path";
 
+const apiTarget = process.env.VITE_API_URL || "http://localhost:4100";
+
 export default defineConfig({
   plugins: [TanStackRouterVite({ quoteStyle: "double" }), tailwindcss()],
   resolve: {
@@ -11,14 +13,14 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: Number(process.env.VITE_PORT) || 5173,
     proxy: {
       "/api": {
-        target: "http://localhost:4100",
+        target: apiTarget,
         changeOrigin: true,
       },
       "/ws": {
-        target: "ws://localhost:4100",
+        target: apiTarget.replace(/^http/, "ws"),
         changeOrigin: true,
         ws: true,
       },

@@ -55,6 +55,39 @@ function parseMetaFile(content: string): Record<string, string> {
   return result;
 }
 
+function buildSessionFromMeta(
+  meta: Record<string, string>,
+  fallbackName: string,
+  projectPath: string,
+  artifacts: { hasAuditReport: boolean; hasExecutionPlan: boolean; hasProgress: boolean },
+): DeepReviewSession {
+  return {
+    provider: meta.provider || "claude",
+    sessionName: meta.session_name || fallbackName,
+    startedAt: meta.started_at || "",
+    endedAt: meta.ended_at,
+    exitCode: meta.exit_code ? Number(meta.exit_code) : undefined,
+    model: meta.model || "unknown",
+    projectPath: meta.cwd || projectPath,
+    ttyLog: meta.tty_log || "",
+    jsonLog: meta.json_log,
+    ...artifacts,
+  };
+}
+
+async function getReviewArtifactFlags(logsDir: string) {
+  return {
+    hasAuditReport: await fileExists(join(logsDir, "audit-report.md")),
+    hasExecutionPlan: await fileExists(join(logsDir, "execution-plan.md")),
+    hasProgress: await fileExists(join(logsDir, "progress.md")),
+  };
+}
+
+async function getSortedMetaFiles(logsDir: string): Promise<string[]> {
+  const files = await readdir(logsDir);
+  return files.filter((f) => f.endsWith(".meta.txt")).sort().reverse();
+}
+
 // GET /api/projects/:key/reviews — list deep review sessions
 router.get("/:key/reviews", async (req, res) => {
   const project = await getProject(req.params.key);
@@ -66,32 +99,15 @@ router.get("/:key/reviews", async (req, res) => {
   }
 
   try {
-    const files = await readdir(logsDir);
-    const metaFiles = files
-      .filter((f) => f.endsWith(".meta.txt"))
-      .sort()
-      .reverse();
+    const metaFiles = await getSortedMetaFiles(logsDir);
+    const artifacts = await getReviewArtifactFlags(logsDir);
 
     const reviews: DeepReviewSession[] = [];
     for (const file of metaFiles) {
       const content = await safeReadFile(join(logsDir, file));
       if (!content) continue;
       const meta = parseMetaFile(content);
-
-      reviews.push({
-        provider: meta.provider || "claude",
-        sessionName: meta.session_name || file.replace(".meta.txt", ""),
-        startedAt: meta.started_at || "",
-        endedAt: meta.ended_at,
-        exitCode: meta.exit_code ? Number(meta.exit_code) : undefined,
-        model: meta.model || "unknown",
-        projectPath: meta.cwd || project.path,
-        ttyLog: meta.tty_log || "",
-        jsonLog: meta.json_log,
-        hasAuditReport: await fileExists(join(logsDir, "audit-report.md")),
-        hasExecutionPlan: await fileExists(join(logsDir, "execution-plan.md")),
-        hasProgress: await fileExists(join(logsDir, "progress.md")),
-      });
+      reviews.push(buildSessionFromMeta(meta, file.replace(".meta.txt", ""), project.path, artifacts));
     }
 
     return res.json({ reviews });
@@ -110,18 +126,8 @@ router.get("/:key/reviews/latest", async (req, res) => {
     return res.status(404).json({ error: "No reviews found" });
   }
 
-  const auditReport = await safeReadFile(join(logsDir, "audit-report.md"));
-  const executionPlan = await safeReadFile(join(logsDir, "execution-plan.md"));
-  const progress = await safeReadFile(join(logsDir, "progress.md"));
-
-  // Find latest meta file
   try {
-    const files = await readdir(logsDir);
-    const metaFiles = files
-      .filter((f) => f.endsWith(".meta.txt"))
-      .sort()
-      .reverse();
-
+    const metaFiles = await getSortedMetaFiles(logsDir);
     if (metaFiles.length === 0) {
       return res.status(404).json({ error: "No reviews found" });
     }
@@ -129,19 +135,16 @@ router.get("/:key/reviews/latest", async (req, res) => {
     const content = await safeReadFile(join(logsDir, metaFiles[0]));
     const meta = content ? parseMetaFile(content) : {};
 
+    const auditReport = await safeReadFile(join(logsDir, "audit-report.md"));
+    const executionPlan = await safeReadFile(join(logsDir, "execution-plan.md"));
+    const progress = await safeReadFile(join(logsDir, "progress.md"));
+
     return res.json({
-      provider: meta.provider || "claude",
-      sessionName: meta.session_name || "",
-      startedAt: meta.started_at || "",
-      endedAt: meta.ended_at,
-      exitCode: meta.exit_code ? Number(meta.exit_code) : undefined,
-      model: meta.model || "unknown",
-      projectPath: meta.cwd || project.path,
-      ttyLog: meta.tty_log || "",
-      jsonLog: meta.json_log,
-      hasAuditReport: !!auditReport,
-      hasExecutionPlan: !!executionPlan,
-      hasProgress: !!progress,
+      ...buildSessionFromMeta(meta, "", project.path, {
+        hasAuditReport: !!auditReport,
+        hasExecutionPlan: !!executionPlan,
+        hasProgress: !!progress,
+      }),
       auditReport,
       executionPlan,
       progress,

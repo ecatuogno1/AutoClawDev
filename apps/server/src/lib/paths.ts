@@ -74,14 +74,15 @@ export function getProjectLockPath(projectPath: string): string {
 // Try new location first, fall back to legacy
 
 export function resolveExperimentsPath(key: string, projectPath?: string): string {
+  // Prefer new per-project location
   if (projectPath) {
     const newPath = getProjectExperimentsPath(projectPath);
     if (existsSync(newPath)) return newPath;
   }
-  // Legacy fallback
+  // Fall back to legacy workspace path
   const legacyPath = join(getLegacyWorkspaceDir(), `experiments-${key}.jsonl`);
   if (existsSync(legacyPath)) return legacyPath;
-  // Default to new location (for writes)
+  // Default to new location for writes
   return projectPath
     ? getProjectExperimentsPath(projectPath)
     : legacyPath;
