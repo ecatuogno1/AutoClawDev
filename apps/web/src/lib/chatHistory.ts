@@ -1,4 +1,5 @@
-export type ChatProvider = "claude" | "codex";
+import type { ChatProvider } from "@/components/chat/types";
+export type { ChatProvider };
 
 export interface RecentChatEntry {
   id: string;

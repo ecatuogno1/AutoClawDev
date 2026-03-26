@@ -87,7 +87,7 @@ export function basenameOf(path: string) {
   return segments[segments.length - 1] ?? path;
 }
 
-export function extensionOf(path: string) {
+function extensionOf(path: string) {
   const fileName = basenameOf(path);
   const dotIndex = fileName.lastIndexOf(".");
   return dotIndex >= 0 ? fileName.slice(dotIndex + 1).toLowerCase() : "";

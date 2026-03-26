@@ -83,8 +83,11 @@ function parseExperimentLine(line: string): Experiment | null {
         ...parsed,
         tools: normalizeTools(parsed.tools),
       };
-    } catch {
-      // Try the next recovery strategy.
+    } catch (err) {
+      if (candidate === line) {
+        // Only log on the original line (not recovery attempts)
+        console.error(`Malformed experiment line: ${(err as Error).message}`);
+      }
     }
   }
 
