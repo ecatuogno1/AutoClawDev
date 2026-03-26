@@ -191,50 +191,47 @@ case "$PROVIDER" in
 
     CMD=(
       claude
+      --print
       --model "$MODEL"
       --effort max
       --dangerously-skip-permissions
       --verbose
-      --chrome
-      --name "$SESSION_NAME"
     )
 
     DISPLAY_MODEL="$MODEL"
     DISPLAY_EFFORT="max"
     DISPLAY_PERMS="bypass"
-    RESUME_HINT="claude --resume \"$SESSION_NAME\""
+    RESUME_HINT="autoclaw review $PROJECT_KEY"
     ;;
 
   codex)
     MODEL="gpt-5.4"
-    TTY_LOG="$LOG_DIR/${SESSION_NAME}-codex-${STAMP}.typescript"
+    TTY_LOG="$LOG_DIR/${SESSION_NAME}-codex-${STAMP}.log"
     META_LOG="$LOG_DIR/${SESSION_NAME}-codex-${STAMP}.meta.txt"
 
     CMD=(
-      codex
+      codex exec
       -m "$MODEL"
       -c "model_reasoning_effort=\"high\""
       --dangerously-bypass-approvals-and-sandbox
-      -C "$PROJECT_PATH"
     )
 
     DISPLAY_MODEL="$MODEL"
     DISPLAY_EFFORT="high"
     DISPLAY_PERMS="bypass"
-    RESUME_HINT="codex resume --last"
+    RESUME_HINT="autoclaw review $PROJECT_KEY --codex"
     ;;
 
   codex-fast)
     MODEL="gpt-5.4"
-    TTY_LOG="$LOG_DIR/${SESSION_NAME}-codex-fast-${STAMP}.typescript"
+    TTY_LOG="$LOG_DIR/${SESSION_NAME}-codex-fast-${STAMP}.log"
     META_LOG="$LOG_DIR/${SESSION_NAME}-codex-fast-${STAMP}.meta.txt"
 
     CMD=(
-      codex
+      codex exec
       -m "$MODEL"
       -c "model_reasoning_effort=\"high\""
       --dangerously-bypass-approvals-and-sandbox
-      -C "$PROJECT_PATH"
     )
 
     DISPLAY_MODEL="$MODEL (fast)"
@@ -274,9 +271,9 @@ echo
 
 cd "$PROJECT_PATH"
 
-# macOS script: captures all terminal I/O
-script -q "$TTY_LOG" "${CMD[@]}" "$PROMPT"
-EXIT_CODE=$?
+# Non-interactive: runs to completion, logs output
+"${CMD[@]}" "$PROMPT" 2>&1 | tee "$TTY_LOG"
+EXIT_CODE=${PIPESTATUS[0]:-$?}
 
 {
   echo "ended_at=$(date -Iseconds)"
