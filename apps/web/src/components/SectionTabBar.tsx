@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useRef } from "react";
 import {
   BrainCircuitIcon,
   FlaskConicalIcon,
@@ -17,7 +18,7 @@ import {
 } from "@/components/layoutNavigation";
 
 const sectionTabClassName =
-  "inline-flex h-9 shrink-0 items-center gap-2 border-b-2 px-3 text-sm transition-colors duration-150";
+  "inline-flex h-9 shrink-0 items-center gap-2 border-b-2 px-3 text-sm transition-[border-color,color,background-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58a6ff]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0d1117]";
 
 const PROJECT_SECTIONS: Array<{
   icon: typeof HouseIcon;
@@ -46,13 +47,69 @@ export function SectionTabBar() {
   const routerState = useRouterState();
   const pathname = routerState.location.pathname;
   const navState = deriveLayoutNavState(pathname);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const projectKey = navState.activeProjectKey;
   const tabs = navState.isProjectRoute ? PROJECT_SECTIONS : GLOBAL_SECTIONS;
 
+  const navigateToTab = useCallback((tabId: GlobalSectionId | ProjectSectionId) => {
+    if (navState.isProjectRoute && projectKey) {
+      switch (tabId) {
+        case "reviews":
+          return navigate({
+            to: "/projects/$projectKey/reviews",
+            params: { projectKey },
+          });
+        case "memory":
+          return navigate({
+            to: "/projects/$projectKey/memory",
+            params: { projectKey },
+          });
+        case "workspace":
+          return navigate({
+            to: "/projects/$projectKey/workspace",
+            params: { projectKey },
+          });
+        case "home":
+        default:
+          return navigate({ to: "/projects/$projectKey", params: { projectKey } });
+      }
+    }
+
+    switch (tabId) {
+      case "experiments":
+        return navigate({ to: "/experiments" });
+      case "live":
+        return navigate({ to: "/live" });
+      case "settings":
+        return navigate({ to: "/settings" });
+      case "command-center":
+      default:
+        return navigate({ to: "/" });
+    }
+  }, [navState.isProjectRoute, navigate, projectKey]);
+
+  useEffect(() => {
+    const activeTab = scrollContainerRef.current?.querySelector<HTMLElement>(
+      '[data-section-active="true"]',
+    );
+    activeTab?.scrollIntoView({
+      behavior: "smooth",
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [
+    navState.activeGlobalSection,
+    navState.activeProjectSection,
+    navState.isProjectRoute,
+  ]);
+
   return (
-    <div className="flex min-h-9 items-center border-b border-[#30363d]/80 bg-[#0d1117]/95 px-3">
-      <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+    <div className="flex min-h-10 items-center border-b border-[#30363d]/80 bg-[linear-gradient(180deg,rgba(13,17,23,0.98)_0%,rgba(13,17,23,0.95)_100%)] px-3 shadow-[inset_0_-1px_0_rgba(48,54,61,0.35)]">
+      <div
+        ref={scrollContainerRef}
+        className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = navState.isProjectRoute
@@ -64,59 +121,20 @@ export function SectionTabBar() {
               key={tab.id}
               type="button"
               aria-current={isActive ? "page" : undefined}
+              data-section-active={isActive ? "true" : "false"}
+              title={tab.label}
               className={cn(
                 sectionTabClassName,
                 isActive
-                  ? "border-[#58a6ff] text-[#e6edf3]"
-                  : "border-transparent text-[#8b949e] hover:text-[#e6edf3]",
+                  ? "border-[#58a6ff] bg-[#0f1620] text-[#f0f6fc]"
+                  : "border-transparent text-[#8b949e] hover:bg-[#11161d] hover:text-[#e6edf3]",
               )}
               onClick={() => {
-                if (navState.isProjectRoute && projectKey) {
-                  switch (tab.id) {
-                    case "reviews":
-                      void navigate({
-                        to: "/projects/$projectKey/reviews",
-                        params: { projectKey },
-                      });
-                      return;
-                    case "memory":
-                      void navigate({
-                        to: "/projects/$projectKey/memory",
-                        params: { projectKey },
-                      });
-                      return;
-                    case "workspace":
-                      void navigate({
-                        to: "/projects/$projectKey/workspace",
-                        params: { projectKey },
-                      });
-                      return;
-                    case "home":
-                    default:
-                      void navigate({ to: "/projects/$projectKey", params: { projectKey } });
-                      return;
-                  }
-                }
-
-                switch (tab.id) {
-                  case "experiments":
-                    void navigate({ to: "/experiments" });
-                    return;
-                  case "live":
-                    void navigate({ to: "/live" });
-                    return;
-                  case "settings":
-                    void navigate({ to: "/settings" });
-                    return;
-                  case "command-center":
-                  default:
-                    void navigate({ to: "/" });
-                    return;
-                }
+                void navigateToTab(tab.id);
               }}
             >
               <Icon className="size-4" />
-              <span>{tab.label}</span>
+              <span className="whitespace-nowrap">{tab.label}</span>
             </button>
           );
         })}

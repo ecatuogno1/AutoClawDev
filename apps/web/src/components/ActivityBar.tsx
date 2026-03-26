@@ -18,7 +18,7 @@ export default function ActivityBar(props: ActivityBarProps) {
   const navigate = useNavigate();
 
   return (
-    <div className="fixed inset-y-0 left-0 z-50 flex w-12 flex-col items-center justify-between border-r border-[#30363d]/80 bg-[#010409]/95 backdrop-blur-sm">
+    <div className="fixed inset-y-0 left-0 z-50 flex w-12 flex-col items-center justify-between border-r border-[#30363d]/80 bg-[linear-gradient(180deg,rgba(1,4,9,0.98)_0%,rgba(13,17,23,0.98)_100%)] backdrop-blur-sm">
       <div className="flex flex-col items-center gap-0.5 pt-2">
         {ACTIVITY_PANEL_ITEMS.map((item) => {
           const isActive = props.activePanel === item.id;
@@ -29,11 +29,12 @@ export default function ActivityBar(props: ActivityBarProps) {
               key={item.id}
               type="button"
               aria-label={item.label}
+              aria-pressed={isActive}
               title={item.label}
               className={cn(
-                "relative flex size-10 items-center justify-center rounded-lg transition-colors",
+                "relative flex size-10 items-center justify-center rounded-lg transition-[background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58a6ff]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#010409]",
                 isActive
-                  ? "text-[#e6edf3] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-[#e6edf3]"
+                  ? "bg-[#11161d] text-[#e6edf3] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-[#58a6ff]"
                   : "text-[#6e7681] hover:bg-[#161b22] hover:text-[#8b949e]",
               )}
               onClick={() => props.onSelectPanel(item.id)}
@@ -51,9 +52,9 @@ export default function ActivityBar(props: ActivityBarProps) {
           aria-label={SETTINGS_ITEM.label}
           title={SETTINGS_ITEM.label}
           className={cn(
-            "relative flex size-10 items-center justify-center rounded-lg transition-colors",
+            "relative flex size-10 items-center justify-center rounded-lg transition-[background-color,color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58a6ff]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#010409]",
             props.isSettingsActive
-              ? "text-[#e6edf3] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-[#e6edf3]"
+              ? "bg-[#11161d] text-[#e6edf3] before:absolute before:inset-y-1 before:left-0 before:w-[2px] before:rounded-r before:bg-[#58a6ff]"
               : "text-[#6e7681] hover:bg-[#161b22] hover:text-[#8b949e]",
           )}
           onClick={() => {

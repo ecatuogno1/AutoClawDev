@@ -32,7 +32,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const effectivePanel = settingsActive ? null : activePanel;
 
   return (
-    <div className="min-h-screen bg-[#0d1117] text-[#e6edf3]">
+    <div className="h-screen overflow-hidden bg-[#0d1117] text-[#e6edf3]">
       <ActivityBar
         activePanel={effectivePanel}
         onSelectPanel={(panelId) => {
@@ -57,10 +57,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
           panelId={effectivePanel}
           activeProjectKey={navState.activeProjectKey}
         />
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <ProjectTabBar />
           <SectionTabBar />
-          <main className="min-h-0 flex-1 overflow-auto bg-[#0d1117]">{children}</main>
+          <main className="min-h-0 flex-1 overflow-auto bg-[#0d1117] [scrollbar-gutter:stable]">
+            {children}
+          </main>
         </div>
       </SidebarProvider>
       <FloatingChat activeProjectKey={navState.activeProjectKey} />

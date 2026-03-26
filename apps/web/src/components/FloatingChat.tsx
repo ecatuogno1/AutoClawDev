@@ -63,7 +63,7 @@ export function FloatingChat({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && isOpen && !isMinimized) {
+      if (event.key === "Escape" && isOpen) {
         closePanel();
       }
     };
@@ -93,7 +93,7 @@ export function FloatingChat({
         aria-expanded={isOpen && !isMinimized}
         onClick={restorePanel}
         className={cn(
-          "fixed bottom-6 right-6 z-40 inline-flex size-12 items-center justify-center rounded-full border border-[#2f81f7]/60 bg-[#1f6feb] text-white shadow-[0_18px_48px_rgba(1,4,9,0.45)] transition-all hover:bg-[#388bfd] focus:outline-none focus:ring-2 focus:ring-[#58a6ff] focus:ring-offset-2 focus:ring-offset-[#0d1117]",
+          "fixed bottom-6 right-6 z-40 inline-flex size-12 items-center justify-center rounded-full border border-[#2f81f7]/60 bg-[#1f6feb] text-white shadow-[0_18px_48px_rgba(1,4,9,0.45)] transition-all duration-200 hover:bg-[#388bfd] focus:outline-none focus:ring-2 focus:ring-[#58a6ff] focus:ring-offset-2 focus:ring-offset-[#0d1117] motion-reduce:transition-none",
           isOpen && !isMinimized && "pointer-events-none translate-y-2 opacity-0",
         )}
       >
@@ -105,7 +105,7 @@ export function FloatingChat({
 
       <div
         className={cn(
-          "fixed bottom-6 right-6 z-40 origin-bottom-right transition-all duration-200 ease-out",
+          "fixed bottom-6 right-6 z-40 origin-bottom-right transition-all duration-200 ease-out motion-reduce:transition-none",
           isOpen && !isMinimized
             ? "translate-y-0 scale-100 opacity-100"
             : "pointer-events-none translate-y-6 scale-[0.98] opacity-0",
@@ -113,7 +113,7 @@ export function FloatingChat({
       >
         <section
           aria-label="Floating chat"
-          className="relative flex h-[min(31.25rem,calc(100vh-6rem))] w-[min(25rem,calc(100vw-5.5rem))] max-w-[calc(100vw-5.5rem)] resize flex-col overflow-hidden rounded-2xl border border-[#30363d] bg-[#0d1117]/96 shadow-[0_30px_80px_rgba(1,4,9,0.55)] backdrop-blur-xl"
+          className="relative flex h-[min(31.25rem,calc(100vh-6rem))] w-[min(25rem,calc(100vw-5rem))] max-w-[calc(100vw-5rem)] resize flex-col overflow-hidden rounded-2xl border border-[#30363d] bg-[#0d1117]/96 shadow-[0_30px_80px_rgba(1,4,9,0.55)] backdrop-blur-xl"
         >
           <div className="flex items-center justify-between gap-3 border-b border-[#30363d] bg-[linear-gradient(180deg,#11161d_0%,#0d1117_100%)] px-4 py-3">
             <div>

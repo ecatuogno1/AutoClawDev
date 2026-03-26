@@ -1572,12 +1572,34 @@ cmd_full_cycle() {
   local total=$((passes * ${#FULL_CYCLE_PROFILES[@]}))
   local current=0
 
+  # Capture baseline ONCE before the full cycle — all 5 profiles share it
+  local repo_path
+  repo_path=$(get_project_field "$project_key" "path" 2>/dev/null)
+  local baseline_json=""
+  if [ -n "$repo_path" ]; then
+    local head_ref
+    head_ref=$(git -C "$repo_path" rev-parse HEAD 2>/dev/null || echo "")
+    if [ -n "$head_ref" ]; then
+      # Check if baseline is already cached for this commit
+      local baseline_dir="$WORKSPACE/validation-baselines"
+      local safe_key=${project_key//[^A-Za-z0-9._-]/-}
+      local cache_file="$baseline_dir/${safe_key}-${head_ref}-reliability.json"
+      if [ -f "$cache_file" ]; then
+        baseline_json=$(cat "$cache_file")
+        gum style --foreground 242 "  Reusing cached baseline for ${head_ref:0:8}"
+      fi
+    fi
+  fi
+
   for pass in $(seq 1 "$passes"); do
     [ "$passes" -gt 1 ] && gum style --foreground 117 --bold "  Pass $pass/$passes"
     for profile in "${FULL_CYCLE_PROFILES[@]}"; do
       current=$((current + 1))
       gum style --foreground 215 "  [$current/$total] Profile: $profile"
-      AUTOCLAWDEV_TEAM_PROFILE="$profile" run_runner_once "$project_key" 1 "" "append"
+      # Pass baseline JSON to skip recapturing for subsequent profiles
+      AUTOCLAWDEV_TEAM_PROFILE="$profile" \
+      AUTOCLAWDEV_BASELINE_JSON="$baseline_json" \
+        run_runner_once "$project_key" 1 "" "append"
       local rc=$?
       if [ $rc -ne 0 ]; then
         gum style --foreground 203 "  Profile $profile failed (exit $rc)"
