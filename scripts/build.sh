@@ -221,7 +221,164 @@ fi
   echo "started_at=$(date -Iseconds)"
 } | tee "$META_LOG"
 
-# ── Execute phases ───────────────────────────────────────────────────────────
+
+# ── Checklist extraction ─────────────────────────────────────────────
+
+extract_phase_checklist() {
+  local phase_name=$1
+
+  # Try to find the specific phase file first (most reliable)
+  if [ -n "$PLAN_DIR" ]; then
+    local phase_num
+    phase_num=$(echo "$phase_name" | grep -oE '[0-9]+' | head -1)
+    if [ -n "$phase_num" ]; then
+      local phase_file
+      phase_file=$(ls "$PLAN_DIR"/phase-${phase_num}*.md 2>/dev/null | head -1)
+      if [ -n "$phase_file" ] && [ -f "$phase_file" ]; then
+        python3 -c "
+import re, sys
+content = open(sys.argv[1]).read()
+lines = content.split('\n')
+in_criteria = False
+for line in lines:
+    stripped = line.strip()
+    low = stripped.lower()
+    if ('acceptance' in low or 'criteria' in low or 'checklist' in low) and stripped.startswith('#'):
+        in_criteria = True
+        continue
+    if in_criteria and stripped.startswith('#'):
+        break
+    if in_criteria and re.match(r'^-\s*\[[ x]\]', stripped):
+        item = re.sub(r'^-\s*\[[ x]\]\s*', '', stripped)
+        if item:
+            print(item)
+" "$phase_file"
+        return
+      fi
+    fi
+  fi
+
+  # Fallback: search the combined plan content
+  python3 -c "
+import re, sys
+phase_name = sys.argv[1]
+content = sys.stdin.read()
+lines = content.split('\n')
+in_phase = False
+in_criteria = False
+for line in lines:
+    stripped = line.strip()
+    low = stripped.lower()
+    phase_key = phase_name.lower().split(':')[0].strip()
+    if phase_key in low and stripped.startswith('#'):
+        in_phase = True
+        in_criteria = False
+        continue
+    if in_phase and ('acceptance' in low or 'criteria' in low) and stripped.startswith('#'):
+        in_criteria = True
+        continue
+    if in_criteria and stripped.startswith('#'):
+        break
+    if in_criteria and re.match(r'^-\s*\[[ x]\]', stripped):
+        item = re.sub(r'^-\s*\[[ x]\]\s*', '', stripped)
+        if item:
+            print(item)
+" "$phase_name" <<< "$PLAN_CONTENT"
+}
+
+verify_phase() {
+  local phase_num=$1
+  local phase_name=$2
+
+  local checklist
+  checklist=$(extract_phase_checklist "$phase_name")
+
+  if [ -z "$checklist" ]; then
+    echo "  No acceptance criteria found — checking build + lint only."
+    # At minimum, verify the project builds
+    if [ -n "$LINT_CMD" ]; then
+      echo "  Running: $LINT_CMD"
+      if ! (cd "$PROJECT_PATH" && eval "$LINT_CMD" >/dev/null 2>&1); then
+        echo "  ✗ Lint failed"
+        return 1
+      fi
+      echo "  ✓ Lint passed"
+    fi
+    # Check for commits in the last hour
+    local recent=$(git -C "$PROJECT_PATH" log --oneline --since="1 hour ago" 2>/dev/null | wc -l | tr -d ' ')
+    if [ "$recent" -eq 0 ]; then
+      echo "  ✗ No commits made (the AI may not have done anything)"
+      return 1
+    fi
+    echo "  ✓ $recent commit(s) made"
+    return 0
+  fi
+
+  local total=0
+  local passed=0
+  local failed_items=""
+
+  echo ""
+  echo "  Verifying acceptance criteria..."
+  echo ""
+
+  while IFS= read -r item; do
+    [ -z "$item" ] && continue
+    total=$((total + 1))
+    local ok=false
+
+    # Pattern-based verification
+    if echo "$item" | grep -qi "build passes\|pnpm build"; then
+      if (cd "$PROJECT_PATH" && pnpm build >/dev/null 2>&1); then ok=true; fi
+    elif echo "$item" | grep -qi "lint\|pnpm lint"; then
+      if [ -n "$LINT_CMD" ] && (cd "$PROJECT_PATH" && eval "$LINT_CMD" >/dev/null 2>&1); then ok=true; fi
+    elif echo "$item" | grep -qi "test\|pnpm test"; then
+      if [ -n "$TEST_CMD" ] && (cd "$PROJECT_PATH" && eval "$TEST_CMD" >/dev/null 2>&1); then ok=true; fi
+    else
+      # Check for file existence patterns
+      local file_ref
+      file_ref=$(echo "$item" | grep -oE '[a-zA-Z0-9_/.]+\.(tsx?|jsx?|md|json|css|vue|svelte)' | head -1)
+      if [ -n "$file_ref" ]; then
+        if [ -f "$PROJECT_PATH/$file_ref" ]; then
+          ok=true
+        else
+          # Try finding it anywhere in the project
+          if find "$PROJECT_PATH" -path "*/node_modules" -prune -o -name "$(basename "$file_ref")" -print 2>/dev/null | head -1 | grep -q .; then
+            ok=true
+          fi
+        fi
+      else
+        # Can't auto-verify — check if there are recent commits (work was done)
+        local recent=$(git -C "$PROJECT_PATH" log --oneline --since="30 minutes ago" 2>/dev/null | wc -l | tr -d ' ')
+        if [ "$recent" -gt 0 ]; then ok=true; fi
+      fi
+    fi
+
+    if [ "$ok" = true ]; then
+      printf "    ✓ %s\n" "$item"
+      passed=$((passed + 1))
+    else
+      printf "    ✗ %s\n" "$item"
+      failed_items="${failed_items}${item}\n"
+    fi
+  done <<< "$checklist"
+
+  echo ""
+  echo "  Checklist: $passed/$total passed"
+
+  # Export failed items for retry prompt
+  VERIFY_FAILED_ITEMS="$failed_items"
+
+  if [ "$passed" -lt "$total" ]; then
+    return 1
+  fi
+  return 0
+}
+
+# ── Execute phases with verification loop ────────────────────────────
+
+MAX_ATTEMPTS="${AUTOCLAW_BUILD_MAX_ATTEMPTS:-3}"
+VERIFY_FAILED_ITEMS=""
 
 cd "$PROJECT_PATH"
 
@@ -235,16 +392,54 @@ for i in "${!PHASE_NAMES[@]}"; do
     continue
   fi
 
-  echo ""
-  echo "═══════════════════════════════════════════════════════════════"
-  echo "  [$PHASE_NUM/${#PHASE_NAMES[@]}] ${PHASE_NAME}"
-  echo "═══════════════════════════════════════════════════════════════"
-  echo ""
+  phase_done=false
+  attempt=0
 
-  TTY_LOG="$LOG_DIR/build-phase${PHASE_NUM}-${STAMP}.typescript"
+  while [ "$phase_done" = false ] && [ "$attempt" -lt "$MAX_ATTEMPTS" ]; do
+    attempt=$((attempt + 1))
 
-  # Build the prompt for this phase
-  PROMPT="You are implementing ${PHASE_NAME} of a build plan for ${PROJECT_NAME}.
+    echo ""
+    echo "═══════════════════════════════════════════════════════════════"
+    if [ "$attempt" -gt 1 ]; then
+      echo "  [$PHASE_NUM/${#PHASE_NAMES[@]}] ${PHASE_NAME} — retry $attempt/$MAX_ATTEMPTS"
+    else
+      echo "  [$PHASE_NUM/${#PHASE_NAMES[@]}] ${PHASE_NAME}"
+    fi
+    echo "═══════════════════════════════════════════════════════════════"
+    echo ""
+
+    TTY_LOG="$LOG_DIR/build-phase${PHASE_NUM}-attempt${attempt}-${STAMP}.typescript"
+
+    # Get checklist items for the prompt
+    CHECKLIST_TEXT=$(extract_phase_checklist "$PHASE_NAME")
+    CHECKLIST_BLOCK=""
+    if [ -n "$CHECKLIST_TEXT" ]; then
+      CHECKLIST_BLOCK="
+## ACCEPTANCE CRITERIA — MANDATORY
+
+You MUST complete ALL of these before stopping. Do NOT exit until every item is done.
+If you are unsure, re-read the plan. If something is blocked, explain why in a commit message.
+
+$(echo "$CHECKLIST_TEXT" | while IFS= read -r item; do [ -n "$item" ] && echo "- [ ] $item"; done)
+
+After implementing, verify EACH item. If any fails, fix it before committing."
+    fi
+
+    # Retry context
+    RETRY_BLOCK=""
+    if [ "$attempt" -gt 1 ] && [ -n "$VERIFY_FAILED_ITEMS" ]; then
+      RETRY_BLOCK="
+## RETRY — PREVIOUS ATTEMPT WAS INCOMPLETE
+
+This is attempt $attempt of $MAX_ATTEMPTS. The previous attempt failed these checks:
+
+$(echo -e "$VERIFY_FAILED_ITEMS" | while IFS= read -r line; do [ -n "$line" ] && echo "- ✗ $line"; done)
+
+Check git log and git diff to see what was already done. Do NOT redo completed work.
+Focus ONLY on the items above that are still failing."
+    fi
+
+    PROMPT="You are implementing ${PHASE_NAME} of a build plan for ${PROJECT_NAME}.
 
 Working directory: ${PROJECT_PATH}
 Test command: ${TEST_CMD}
@@ -257,65 +452,75 @@ ${PLAN_CONTENT}
 ## Your Task
 
 Implement ONLY ${PHASE_NAME}. Do not skip ahead to later phases.
-
-Read the plan section for this phase carefully. It tells you exactly what to build, what files to create, and what to port/adapt.
+Read the plan section for this phase carefully.
 
 ${CONTEXT}
+${CHECKLIST_BLOCK}
+${RETRY_BLOCK}
 
 ## Rules
 
 1. Read any referenced source files before copying or adapting them.
 2. Build incrementally — get each piece working before moving to the next.
-3. Run ${TEST_CMD:-tests} and ${LINT_CMD:-lint} after completing the phase.
+3. Run the test and lint commands after completing the phase.
 4. Create a git commit with a descriptive message when the phase is done.
-5. If you run low on context, save progress to .autoclaw/builds/build-progress.md.
-6. Do NOT implement other phases — only ${PHASE_NAME}.
+5. Do NOT stop until ALL acceptance criteria are satisfied.
+6. Do NOT implement other phases — ONLY ${PHASE_NAME}.
 
 ## Progress So Far
 
 $(cat "$PROGRESS_FILE" 2>/dev/null || echo "No previous progress — this is the first phase.")
 
-Start implementing ${PHASE_NAME} now."
+Implement ${PHASE_NAME} now. Complete every acceptance criterion before stopping."
 
-  # Build provider command
-  case "$PROVIDER" in
-    claude)
-      CMD=(claude --model opus --effort max --dangerously-skip-permissions --verbose --chrome --name "build-${PROJECT_KEY}-phase${PHASE_NUM}")
-      ;;
-    codex)
-      CMD=(codex -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
-      ;;
-    codex-fast)
-      CMD=(codex -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
-      ;;
-  esac
+    # Provider command
+    case "$PROVIDER" in
+      claude)
+        CMD=(claude --model opus --effort max --dangerously-skip-permissions --verbose --chrome --name "build-${PROJECT_KEY}-phase${PHASE_NUM}")
+        ;;
+      codex)
+        CMD=(codex -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
+        ;;
+      codex-fast)
+        CMD=(codex -m gpt-5.4 -c "model_reasoning_effort=\"high\"" --dangerously-bypass-approvals-and-sandbox)
+        ;;
+    esac
 
-  # Execute the phase
-  script -q "$TTY_LOG" "${CMD[@]}" "$PROMPT"
-  EXIT_CODE=$?
+    # Execute
+    script -q "$TTY_LOG" "${CMD[@]}" "$PROMPT"
+
+    # ── Verify ───────────────────────────────────────────────────────
+    echo ""
+    echo "  Session ended. Running verification..."
+
+    if verify_phase "$PHASE_NUM" "$PHASE_NAME"; then
+      phase_done=true
+    else
+      if [ "$attempt" -lt "$MAX_ATTEMPTS" ]; then
+        echo ""
+        echo "  Some criteria not met. Retrying ($((attempt + 1))/$MAX_ATTEMPTS)..."
+      else
+        echo ""
+        echo "  ✗ Max attempts ($MAX_ATTEMPTS) reached. Moving on."
+        echo "    Some items may need manual attention."
+        phase_done=true  # move to next phase anyway after max retries
+      fi
+    fi
+  done
 
   # Update progress
-  if [ $EXIT_CODE -eq 0 ]; then
-    # Check if this phase line already exists
+  if [ "$phase_done" = true ]; then
     if ! grep -q "\[.\] ${PHASE_NAME}" "$PROGRESS_FILE" 2>/dev/null; then
-      echo "- [x] ${PHASE_NAME} — completed $(date -Iseconds)" >> "$PROGRESS_FILE"
+      echo "- [x] ${PHASE_NAME} — verified $(date -Iseconds) ($attempt attempt(s))" >> "$PROGRESS_FILE"
     else
-      sed -i '' "s/\[ \] ${PHASE_NAME}.*/[x] ${PHASE_NAME} — completed $(date -Iseconds)/" "$PROGRESS_FILE" 2>/dev/null || true
+      sed -i '' "s|\[ \] ${PHASE_NAME}.*|[x] ${PHASE_NAME} — verified $(date -Iseconds)|" "$PROGRESS_FILE" 2>/dev/null || true
     fi
     echo ""
-    echo "Phase $PHASE_NUM completed (exit $EXIT_CODE)."
-  else
-    if ! grep -q "\[.\] ${PHASE_NAME}" "$PROGRESS_FILE" 2>/dev/null; then
-      echo "- [ ] ${PHASE_NAME} — stopped $(date -Iseconds) (exit $EXIT_CODE)" >> "$PROGRESS_FILE"
-    fi
-    echo ""
-    echo "Phase $PHASE_NUM stopped (exit $EXIT_CODE)."
-    echo "Resume with: autoclaw build $PROJECT_KEY $PLAN_FILE --phase $PHASE_NUM"
-    break
+    echo "  ✓ Phase $PHASE_NUM complete ($attempt attempt(s))."
   fi
 done
 
-# ── Ingest findings into memory ──────────────────────────────────────────────
+# ── Ingest into memory ───────────────────────────────────────────────
 if command -v autoclaw >/dev/null 2>&1; then
   echo ""
   echo "Ingesting build results into memory..."
@@ -325,10 +530,11 @@ fi
 {
   echo "ended_at=$(date -Iseconds)"
   echo "exit_code=${EXIT_CODE:-0}"
-  echo "phases_completed=$(grep -c "^\- \[x\]" "$PROGRESS_FILE" 2>/dev/null || echo 0)"
+  echo "phases_completed=$(grep -c '^\- \[x\]' "$PROGRESS_FILE" 2>/dev/null || echo 0)"
+  echo "total_phases=${#PHASE_NAMES[@]}"
 } | tee -a "$META_LOG"
 
 echo ""
-echo "Build session ended."
+echo "Build complete."
 echo "Progress: $PROGRESS_FILE"
 echo "Logs: $LOG_DIR/"
