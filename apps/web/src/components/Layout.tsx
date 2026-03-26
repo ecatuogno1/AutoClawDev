@@ -3,6 +3,7 @@ import { useActiveRuns } from "@/lib/api";
 
 const navItems = [
   { to: "/", label: "Command Center", icon: "grid" },
+  { to: "/chat", label: "Chat", icon: "chat" },
   { to: "/projects", label: "Projects", icon: "folder" },
   { to: "/experiments", label: "Experiments", icon: "flask" },
   { to: "/live", label: "Live", icon: "terminal" },
@@ -11,6 +12,7 @@ const navItems = [
 
 const icons: Record<string, string> = {
   grid: "M3 3h7v7H3V3zm11 0h7v7h-7V3zM3 14h7v7H3v-7zm11 0h7v7h-7v-7z",
+  chat: "M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z",
   folder: "M2 6a2 2 0 012-2h5l2 2h9a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6z",
   flask: "M9 3v8.5L4.5 19a2 2 0 001.7 3h11.6a2 2 0 001.7-3L15 11.5V3M8 3h8",
   terminal: "M4 17l6-5-6-5M12 19h8",

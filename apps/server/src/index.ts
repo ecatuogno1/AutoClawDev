@@ -12,6 +12,7 @@ import sseRouter from "./routes/sse.js";
 import reviewsRouter from "./routes/reviews.js";
 import memoryRouter from "./routes/memory.js";
 import healthRouter from "./routes/health.js";
+import chatRouter from "./routes/chat.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 4100);
@@ -26,6 +27,7 @@ app.use("/api/memory", memoryRouter);
 app.use("/api/projects", projectsRouter);
 app.use("/api/experiments", experimentsRouter);
 app.use("/api/github", githubRouter);
+app.use("/api/chat", chatRouter);
 app.use("/api", runnerRouter);
 app.use("/api", sseRouter);
 
