@@ -1,39 +1,23 @@
 import { useCallback, useEffect, useRef } from "react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { useProjects } from "@/lib/api";
 import { cn } from "@/lib/cn";
-import {
-  deriveLayoutNavState,
-  readStoredProjectSection,
-  type ProjectSectionId,
-} from "@/components/layoutNavigation";
 
 const tabClassName =
   "inline-flex h-8 shrink-0 items-center rounded-lg border px-3 text-sm transition-[border-color,background-color,color,box-shadow] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58a6ff]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#010409]";
 
-export function ProjectTabBar() {
+export function ProjectTabBar({ projectKey }: { projectKey: string | null }) {
   const navigate = useNavigate();
-  const routerState = useRouterState();
-  const pathname = routerState.location.pathname;
-  const navState = deriveLayoutNavState(pathname);
   const { data: projects, isLoading } = useProjects();
   const projectList = projects ?? [];
   const projectCount = projectList.length;
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const goToProject = useCallback((projectKey: string, section: ProjectSectionId) => {
-    switch (section) {
-      case "reviews":
-        return navigate({ to: "/projects/$projectKey/reviews", params: { projectKey } });
-      case "memory":
-        return navigate({ to: "/projects/$projectKey/memory", params: { projectKey } });
-      case "workspace":
-        return navigate({ to: "/projects/$projectKey/workspace", params: { projectKey } });
-      case "home":
-      default:
-        return navigate({ to: "/projects/$projectKey", params: { projectKey } });
-    }
-  }, [navigate]);
+  const goToProject = useCallback(
+    (nextProjectKey: string) =>
+      navigate({ to: "/projects/$projectKey", params: { projectKey: nextProjectKey } }),
+    [navigate],
+  );
 
   useEffect(() => {
     const activeTab = scrollContainerRef.current?.querySelector<HTMLElement>(
@@ -44,7 +28,7 @@ export function ProjectTabBar() {
       block: "nearest",
       inline: "nearest",
     });
-  }, [navState.activeProjectKey, projectCount]);
+  }, [projectKey, projectCount]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -77,11 +61,7 @@ export function ProjectTabBar() {
       }
 
       event.preventDefault();
-      const targetSection =
-        project.key === navState.activeProjectKey && navState.activeProjectSection
-          ? navState.activeProjectSection
-          : readStoredProjectSection(project.key);
-      void goToProject(project.key, targetSection);
+      void goToProject(project.key);
     };
 
     window.addEventListener("keydown", handleKeyDown);
@@ -90,8 +70,6 @@ export function ProjectTabBar() {
     };
   }, [
     goToProject,
-    navState.activeProjectKey,
-    navState.activeProjectSection,
     projectList,
   ]);
 
@@ -110,11 +88,7 @@ export function ProjectTabBar() {
           ))
         ) : projectCount > 0 ? (
           projectList.map((project, index) => {
-            const isActive = navState.activeProjectKey === project.key;
-            const targetSection =
-              isActive && navState.activeProjectSection
-                ? navState.activeProjectSection
-                : readStoredProjectSection(project.key);
+            const isActive = projectKey === project.key;
             const shortcutLabel = index < 5 ? `Ctrl+${index + 1}` : undefined;
 
             return (
@@ -132,7 +106,7 @@ export function ProjectTabBar() {
                     : "border-transparent text-[#8b949e] hover:border-[#30363d]/80 hover:bg-[#11161d] hover:text-[#e6edf3]",
                 )}
                 onClick={() => {
-                  void goToProject(project.key, targetSection);
+                  void goToProject(project.key);
                 }}
               >
                 <span className="max-w-[min(15rem,30vw)] truncate">{project.name}</span>

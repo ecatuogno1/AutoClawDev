@@ -1,10 +1,15 @@
 import { Link } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { useHealthMatrix, useProjects } from "@/lib/api";
+import { useHealthMatrix, useProject, useProjects } from "@/lib/api";
 
-export function ProjectsPanel() {
+export function ProjectsPanel({
+  projectKey,
+}: {
+  projectKey: string | null;
+}) {
   const { data: projects, isLoading } = useProjects();
   const { data: healthData } = useHealthMatrix();
+  const { data: project } = useProject(projectKey ?? "", Boolean(projectKey));
 
   const healthMap = useMemo(() => {
     return Object.fromEntries((healthData?.projects ?? []).map((project) => [project.key, project]));
@@ -18,6 +23,33 @@ export function ProjectsPanel() {
       return right.stats.total - left.stats.total;
     });
   }, [healthMap, projects]);
+
+  if (projectKey) {
+    return (
+      <div className="flex h-full flex-col p-4">
+        <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-4">
+          <div className="text-xs font-medium uppercase tracking-[0.18em] text-[#6e7681]">
+            Workspace Tabs
+          </div>
+          <div className="mt-2 text-sm font-semibold text-[#e6edf3]">
+            {project?.name ?? projectKey}
+          </div>
+          <p className="mt-2 text-sm text-[#8b949e]">
+            Project switching is handled by the workspace tabs above. Use them to move
+            between projects without leaving the active context.
+          </p>
+        </div>
+
+        <Link
+          to="/projects/$projectKey"
+          params={{ projectKey }}
+          className="mt-4 rounded-lg border border-[#30363d] bg-[#0d1117] px-3 py-2 text-center text-sm text-[#8b949e] transition-colors hover:text-[#e6edf3]"
+        >
+          Open current workspace
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col p-4">

@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useAllExperiments } from "@/lib/api";
+import { useAllExperiments, useProjectExperiments } from "@/lib/api";
 
 function formatRelativeTime(timestamp: string) {
   const deltaMs = Date.now() - new Date(timestamp).getTime();
@@ -11,8 +11,19 @@ function formatRelativeTime(timestamp: string) {
   return `${days}d ago`;
 }
 
-export function ExperimentsPanel() {
-  const { data: experiments, isLoading } = useAllExperiments();
+export function ExperimentsPanel({
+  projectKey,
+}: {
+  projectKey: string | null;
+}) {
+  const globalExperimentsQuery = useAllExperiments();
+  const projectExperimentsQuery = useProjectExperiments(projectKey ?? "", Boolean(projectKey));
+  const experiments = projectKey
+    ? projectExperimentsQuery.data
+    : globalExperimentsQuery.data;
+  const isLoading = projectKey
+    ? projectExperimentsQuery.isLoading
+    : globalExperimentsQuery.isLoading;
   const recentExperiments = experiments?.slice(0, 10) ?? [];
 
   return (
@@ -20,7 +31,7 @@ export function ExperimentsPanel() {
       <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-[0.18em] text-[#6e7681]">
-            Recent Experiments
+            {projectKey ? "Project Runs" : "Recent Experiments"}
           </span>
           <span className="text-xs text-[#8b949e]">{experiments?.length ?? 0} total</span>
         </div>
@@ -38,8 +49,14 @@ export function ExperimentsPanel() {
           recentExperiments.map((experiment) => (
             <Link
               key={experiment.id}
-              to={experiment.project ? "/projects/$projectKey" : "/experiments"}
-              params={experiment.project ? { projectKey: experiment.project } : undefined}
+              to={projectKey ? "/projects/$projectKey" : experiment.project ? "/projects/$projectKey" : "/experiments"}
+              params={
+                projectKey
+                  ? { projectKey }
+                  : experiment.project
+                    ? { projectKey: experiment.project }
+                    : undefined
+              }
               className="block rounded-xl border border-[#30363d] bg-[#0d1117] p-3 transition-colors hover:border-[#484f58] hover:bg-[#131a22]"
             >
               <div className="flex items-center justify-between gap-3">
@@ -72,10 +89,11 @@ export function ExperimentsPanel() {
       </div>
 
       <Link
-        to="/experiments"
+        to={projectKey ? "/projects/$projectKey" : "/experiments"}
+        params={projectKey ? { projectKey } : undefined}
         className="mt-4 rounded-lg border border-[#30363d] bg-[#0d1117] px-3 py-2 text-center text-sm text-[#8b949e] transition-colors hover:text-[#e6edf3]"
       >
-        View all experiments
+        {projectKey ? "Open project runs" : "View all experiments"}
       </Link>
     </div>
   );

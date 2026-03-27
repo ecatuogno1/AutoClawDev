@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { cn } from "@/lib/cn";
 import {
-  ACTIVITY_PANEL_ITEMS,
+  getActivityPanelItems,
   SETTINGS_ITEM,
   type ActivityPanelId,
 } from "@/components/activityPanels";
@@ -12,15 +12,17 @@ interface ActivityBarProps {
   onSelectPanel: (panelId: ActivityPanelId) => void;
   activeRunCount?: number;
   isSettingsActive?: boolean;
+  projectKey: string | null;
 }
 
 export default function ActivityBar(props: ActivityBarProps) {
   const navigate = useNavigate();
+  const activityItems = getActivityPanelItems(props.projectKey);
 
   return (
     <div className="fixed inset-y-0 left-0 z-50 flex w-12 flex-col items-center justify-between border-r border-[#30363d]/80 bg-[linear-gradient(180deg,rgba(1,4,9,0.98)_0%,rgba(13,17,23,0.98)_100%)] backdrop-blur-sm">
       <div className="flex flex-col items-center gap-0.5 pt-2">
-        {ACTIVITY_PANEL_ITEMS.map((item) => {
+        {activityItems.map((item) => {
           const isActive = props.activePanel === item.id;
           const Icon = item.icon;
 
@@ -40,7 +42,9 @@ export default function ActivityBar(props: ActivityBarProps) {
               onClick={() => props.onSelectPanel(item.id)}
             >
               <Icon className="size-5" />
-              {item.id === "terminal" ? renderLiveStatus(props.activeRunCount ?? 0) : null}
+              {item.id === "terminal" || item.id === "live"
+                ? renderLiveStatus(props.activeRunCount ?? 0)
+                : null}
             </button>
           );
         })}

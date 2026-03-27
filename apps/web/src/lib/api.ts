@@ -58,18 +58,20 @@ export function useProjects() {
   });
 }
 
-export function useProject(key: string) {
+export function useProject(key: string, enabled = true) {
   return useQuery<ProjectDetail>({
     queryKey: ["project", key],
     queryFn: () => fetchJSON(`/projects/${key}`),
+    enabled: enabled && Boolean(key),
     refetchInterval: 15000,
   });
 }
 
-export function useProjectExperiments(key: string) {
+export function useProjectExperiments(key: string, enabled = true) {
   return useQuery<Experiment[]>({
     queryKey: ["experiments", key],
     queryFn: () => fetchJSON(`/projects/${key}/experiments`),
+    enabled: enabled && Boolean(key),
     refetchInterval: 15000,
   });
 }
@@ -139,27 +141,30 @@ export function useHealthMatrix() {
 }
 
 // Deep reviews
-export function useReviews(key: string) {
+export function useReviews(key: string, enabled = true) {
   return useQuery<{ reviews: DeepReviewSession[] }>({
     queryKey: ["reviews", key],
     queryFn: () => fetchJSON(`/reviews/${key}/reviews`),
+    enabled: enabled && Boolean(key),
     refetchInterval: 30000,
   });
 }
 
-export function useLatestReview(key: string) {
+export function useLatestReview(key: string, enabled = true) {
   return useQuery<DeepReviewDetail>({
     queryKey: ["reviews", key, "latest"],
     queryFn: () => fetchJSON(`/reviews/${key}/reviews/latest`),
+    enabled: enabled && Boolean(key),
     retry: false,
   });
 }
 
 // Memory
-export function useProjectMemory(key: string) {
+export function useProjectMemory(key: string, enabled = true) {
   return useQuery<ProjectMemory>({
     queryKey: ["memory", key],
     queryFn: () => fetchJSON(`/memory/${key}/memory`),
+    enabled: enabled && Boolean(key),
     refetchInterval: 60000,
   });
 }

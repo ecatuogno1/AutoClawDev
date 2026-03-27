@@ -9,7 +9,7 @@ import {
   SettingsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { cn } from "@/lib/cn";
 import {
   deriveLayoutNavState,
@@ -42,18 +42,21 @@ const GLOBAL_SECTIONS: Array<{
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
-export function SectionTabBar() {
+export function SectionTabBar({
+  currentPath,
+  projectKey,
+}: {
+  currentPath: string;
+  projectKey: string | null;
+}) {
   const navigate = useNavigate();
-  const routerState = useRouterState();
-  const pathname = routerState.location.pathname;
-  const navState = deriveLayoutNavState(pathname);
+  const navState = deriveLayoutNavState(currentPath);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const projectKey = navState.activeProjectKey;
-  const tabs = navState.isProjectRoute ? PROJECT_SECTIONS : GLOBAL_SECTIONS;
+  const tabs = projectKey ? PROJECT_SECTIONS : GLOBAL_SECTIONS;
 
   const navigateToTab = useCallback((tabId: GlobalSectionId | ProjectSectionId) => {
-    if (navState.isProjectRoute && projectKey) {
+    if (projectKey) {
       switch (tabId) {
         case "reviews":
           return navigate({
@@ -87,7 +90,7 @@ export function SectionTabBar() {
       default:
         return navigate({ to: "/" });
     }
-  }, [navState.isProjectRoute, navigate, projectKey]);
+  }, [navigate, projectKey]);
 
   useEffect(() => {
     const activeTab = scrollContainerRef.current?.querySelector<HTMLElement>(
@@ -112,7 +115,7 @@ export function SectionTabBar() {
       >
         {tabs.map((tab) => {
           const Icon = tab.icon;
-          const isActive = navState.isProjectRoute
+          const isActive = projectKey
             ? navState.activeProjectSection === tab.id
             : navState.activeGlobalSection === tab.id;
 

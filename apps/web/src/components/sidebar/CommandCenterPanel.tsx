@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useActiveRuns, useHealthMatrix } from "@/lib/api";
+import { useActiveRuns, useHealthMatrix, useProject, useProjectExperiments } from "@/lib/api";
 
 function rateColor(rate: number) {
   if (rate >= 80) return "bg-[#3fb950]";
@@ -8,10 +8,86 @@ function rateColor(rate: number) {
   return "bg-[#484f58]";
 }
 
-export function CommandCenterPanel() {
+export function CommandCenterPanel({
+  projectKey,
+}: {
+  projectKey: string | null;
+}) {
+  const enabled = Boolean(projectKey);
   const { data: health, isLoading } = useHealthMatrix();
   const { data: activeRuns } = useActiveRuns();
+  const { data: project } = useProject(projectKey ?? "", enabled);
+  const { data: experiments } = useProjectExperiments(projectKey ?? "", enabled);
   const activeCount = activeRuns ? Object.keys(activeRuns).length : 0;
+  const activeRun = projectKey ? activeRuns?.[projectKey] : null;
+  const projectHealth = projectKey
+    ? health?.projects.find((entry) => entry.key === projectKey)
+    : null;
+
+  if (projectKey) {
+    return (
+      <div className="flex h-full flex-col p-4">
+        <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-4">
+          <div className="text-xs font-medium uppercase tracking-[0.18em] text-[#6e7681]">
+            Project Health
+          </div>
+          <div className="mt-2 text-sm font-semibold text-[#e6edf3]">
+            {project?.name ?? projectKey}
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 text-center text-xs">
+            <div className="rounded-lg border border-[#30363d] bg-[#161b22] px-2 py-3 text-[#8b949e]">
+              <div className="text-sm font-semibold text-[#e6edf3]">
+                {projectHealth?.passRate ?? project?.stats.passRate ?? 0}%
+              </div>
+              <div>Pass Rate</div>
+            </div>
+            <div className="rounded-lg border border-[#30363d] bg-[#161b22] px-2 py-3 text-[#8b949e]">
+              <div className="text-sm font-semibold text-[#e6edf3]">
+                {experiments?.length ?? project?.stats.total ?? 0}
+              </div>
+              <div>Runs</div>
+            </div>
+            <div className="rounded-lg border border-[#30363d] bg-[#161b22] px-2 py-3 text-[#8b949e]">
+              <div className="text-sm font-semibold text-[#e6edf3]">
+                {projectHealth?.recentTrend ?? "unknown"}
+              </div>
+              <div>Trend</div>
+            </div>
+            <div className="rounded-lg border border-[#30363d] bg-[#161b22] px-2 py-3 text-[#8b949e]">
+              <div className="text-sm font-semibold text-[#e6edf3]">
+                {activeRun ? "Running" : "Idle"}
+              </div>
+              <div>Status</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 space-y-2">
+          <Link
+            to="/projects/$projectKey"
+            params={{ projectKey }}
+            className="block rounded-xl border border-[#30363d] bg-[#0d1117] p-3 text-sm text-[#e6edf3] transition-colors hover:border-[#484f58] hover:bg-[#131a22]"
+          >
+            Open project overview
+          </Link>
+          <Link
+            to="/projects/$projectKey/reviews"
+            params={{ projectKey }}
+            className="block rounded-xl border border-[#30363d] bg-[#0d1117] p-3 text-sm text-[#e6edf3] transition-colors hover:border-[#484f58] hover:bg-[#131a22]"
+          >
+            Open code review
+          </Link>
+          <Link
+            to="/projects/$projectKey/memory"
+            params={{ projectKey }}
+            className="block rounded-xl border border-[#30363d] bg-[#0d1117] p-3 text-sm text-[#e6edf3] transition-colors hover:border-[#484f58] hover:bg-[#131a22]"
+          >
+            Open knowledge base
+          </Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full flex-col p-4">
