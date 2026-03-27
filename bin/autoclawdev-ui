@@ -25,6 +25,47 @@ OPEN_BROWSER=1
 BACKGROUND=0
 COMMAND="start"
 
+resolve_home_dir() {
+  local current_home
+  current_home=$(eval echo ~ 2>/dev/null || true)
+  if [ -n "$current_home" ]; then
+    printf '%s' "$current_home"
+    return 0
+  fi
+  printf '%s' "$HOME"
+}
+
+resolve_repo_root() {
+  local autoclaw_path
+  autoclaw_path=$(command -v autoclawdev 2>/dev/null || true)
+  if [ -n "$autoclaw_path" ]; then
+    cd "$(resolve_source "$autoclaw_path")/.." && pwd
+    return 0
+  fi
+  cd "$SCRIPT_DIR/.." && pwd
+}
+
+resolve_shell_path() {
+  local current_path shell_path
+
+  shell_path="${SHELL:-}"
+  if [ -n "$shell_path" ] && [ -x "$shell_path" ]; then
+    current_path=$("$shell_path" -lc 'printf %s "$PATH"' 2>/dev/null || true)
+    if [ -n "$current_path" ]; then
+      printf '%s' "$current_path"
+      return 0
+    fi
+  fi
+
+  current_path=$(bash -lc 'printf %s "$PATH"' 2>/dev/null || true)
+  if [ -n "$current_path" ]; then
+    printf '%s' "$current_path"
+    return 0
+  fi
+
+  printf '%s' "/usr/local/bin:/usr/bin:/bin"
+}
+
 usage() {
   cat <<'EOF'
 Usage: autoclawdev-ui [--background] [--no-open] [--check] [--stop]
@@ -56,6 +97,13 @@ wait_for_ready() {
 }
 
 write_launch_agent() {
+  local current_home current_path launch_repo_root workspace_root
+
+  current_home=$(resolve_home_dir)
+  current_path=$(resolve_shell_path)
+  launch_repo_root=$(resolve_repo_root)
+  workspace_root="${AUTOCLAWDEV_WORKSPACE:-$current_home/.openclaw/workspace/autoresearch}"
+
   mkdir -p "$LAUNCH_AGENTS_DIR"
   cat > "$PLIST_FILE" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -70,7 +118,7 @@ write_launch_agent() {
       <string>${SERVER_ENTRY}</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>${REPO_ROOT}</string>
+    <string>${launch_repo_root}</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -82,15 +130,15 @@ write_launch_agent() {
     <key>EnvironmentVariables</key>
     <dict>
       <key>AUTOCLAWDEV_REPO_ROOT</key>
-      <string>${REPO_ROOT}</string>
+      <string>${launch_repo_root}</string>
       <key>AUTOCLAWDEV_RUNNER</key>
-      <string>${REPO_ROOT}/scripts/runner.sh</string>
+      <string>${launch_repo_root}/scripts/runner.sh</string>
       <key>AUTOCLAWDEV_WORKSPACE</key>
-      <string>${AUTOCLAWDEV_WORKSPACE:-$HOME/.openclaw/workspace/autoresearch}</string>
+      <string>${workspace_root}</string>
       <key>HOME</key>
-      <string>${HOME}</string>
+      <string>${current_home}</string>
       <key>PATH</key>
-      <string>${HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <string>${current_path}</string>
       <key>PORT</key>
       <string>${PORT}</string>
     </dict>
