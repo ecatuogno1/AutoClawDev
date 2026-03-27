@@ -71,6 +71,8 @@ RUNNER="${AUTOCLAWDEV_RUNNER:-$REPO_ROOT/scripts/runner.sh}"
 UI_LAUNCHER="${AUTOCLAWDEV_UI_LAUNCHER:-$REPO_ROOT/bin/autoclawdev-ui}"
 MAX_CYCLES=50
 VERSION="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || echo "0.1.0-dev")"
+DASHBOARD_PORT="${PORT:-4100}"
+DASHBOARD_URL="http://localhost:${DASHBOARD_PORT}"
 
 # ── Gum Styling ──────────────────────────────────────────────────────
 export GUM_CHOOSE_CURSOR_FOREGROUND="117"
@@ -307,6 +309,7 @@ run_runner_once() {
   local log_mode=${4:-truncate}
   local project_log="$WORKSPACE/run-${project_key}.log"
   local global_log="$WORKSPACE/run.log"
+  local rc=0
 
   [ "$cycles" -gt $MAX_CYCLES ] 2>/dev/null && { echo "Max $MAX_CYCLES cycles."; cycles=$MAX_CYCLES; }
   [ "$cycles" -lt 1 ] 2>/dev/null && cycles=1
@@ -317,11 +320,19 @@ run_runner_once() {
   if [ "$log_mode" = "append" ]; then
     "$RUNNER" "$cycles" "$run_mode" "$project_key" \
       > >(tee -a "$project_log" "$global_log") 2>&1
-    return $?
+    rc=$?
+  else
+    "$RUNNER" "$cycles" "$run_mode" "$project_key" \
+      > >(tee "$project_log" "$global_log") 2>&1
+    rc=$?
   fi
 
-  "$RUNNER" "$cycles" "$run_mode" "$project_key" \
-    > >(tee "$project_log" "$global_log") 2>&1
+  if [ "$rc" -ne 0 ]; then
+    gum style --foreground 203 "  Run failed for $project_key (exit $rc)."
+    show_run_failure_context "$project_key"
+  fi
+
+  return "$rc"
 }
 
 stream_experiments() {
@@ -439,6 +450,155 @@ doctor_check_link() {
 
   print_doctor_line "warn" "$label" "missing: $link_path"
   return 0
+}
+
+extract_semver() {
+  printf "%s\n" "$1" | grep -Eo 'v?[0-9]+(\.[0-9]+){1,2}([.-][0-9A-Za-z.-]+)?' | head -1
+}
+
+version_major() {
+  local version=${1#v}
+  printf "%s" "${version%%.*}"
+}
+
+get_command_version() {
+  local command_name=$1
+  shift
+
+  command -v "$command_name" >/dev/null 2>&1 || return 1
+
+  local raw_output=""
+  raw_output=$("$command_name" "$@" 2>&1 | head -1) || return 1
+  [ -n "$raw_output" ] || return 1
+
+  local parsed_version=""
+  parsed_version=$(extract_semver "$raw_output")
+  printf "%s" "${parsed_version:-$raw_output}"
+}
+
+tool_version_or_missing() {
+  local version=""
+  version=$(get_command_version "$@") || {
+    printf "missing"
+    return 0
+  }
+  printf "%s" "$version"
+}
+
+doctor_check_min_major_version() {
+  local command_name=$1
+  local label=$2
+  local min_major=$3
+  shift 3
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    print_doctor_line "fail" "$label" "missing"
+    return 1
+  fi
+
+  local version=""
+  version=$(get_command_version "$command_name" "$@") || {
+    print_doctor_line "fail" "$label" "version check failed"
+    return 1
+  }
+
+  local major=""
+  major=$(version_major "$version")
+  if [[ "$major" =~ ^[0-9]+$ ]] && [ "$major" -ge "$min_major" ]; then
+    print_doctor_line "ok" "$label" "$version"
+    return 0
+  fi
+
+  print_doctor_line "fail" "$label" "$version (need >= $min_major)"
+  return 1
+}
+
+doctor_check_version_command() {
+  local command_name=$1
+  local label=$2
+  shift 2
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    print_doctor_line "fail" "$label" "missing"
+    return 1
+  fi
+
+  local version=""
+  version=$(get_command_version "$command_name" "$@") || {
+    print_doctor_line "fail" "$label" "version check failed"
+    return 1
+  }
+
+  print_doctor_line "ok" "$label" "$version"
+  return 0
+}
+
+doctor_check_project_paths() {
+  local has_missing=0
+  local has_projects=0
+  local key path
+  while IFS= read -r key; do
+    [ -z "$key" ] && continue
+    has_projects=1
+    path=$(get_project_field "$key" "path")
+    if [ -n "$path" ] && [ -d "$path" ]; then
+      print_doctor_line "ok" "$key path" "$path"
+    else
+      print_doctor_line "fail" "$key path" "missing: ${path:-unset}"
+      has_missing=1
+    fi
+  done < <(get_projects)
+
+  if [ "$has_projects" -eq 0 ]; then
+    print_doctor_line "warn" "project paths" "no registered projects"
+    return 0
+  fi
+
+  [ "$has_missing" -eq 0 ]
+}
+
+doctor_check_dashboard_port() {
+  local port="${DASHBOARD_PORT}"
+  local url="${DASHBOARD_URL}"
+
+  if curl -fsS "${url}/api/health" >/dev/null 2>&1 || curl -fsS "${url}/api/active" >/dev/null 2>&1; then
+    print_doctor_line "ok" "dashboard port" "responding on ${url}"
+    return 0
+  fi
+
+  if lsof -nP -iTCP:"${port}" -sTCP:LISTEN >/dev/null 2>&1; then
+    local owner=""
+    owner=$(lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1 " pid " $2}')
+    print_doctor_line "fail" "dashboard port" "in use on ${url}${owner:+ by $owner}"
+    return 1
+  fi
+
+  print_doctor_line "ok" "dashboard port" "available on ${url}"
+  return 0
+}
+
+print_last_lines() {
+  local file_path=$1
+  local line_count=${2:-5}
+  [ -f "$file_path" ] || return 1
+
+  tail -n "$line_count" "$file_path"
+}
+
+show_run_failure_context() {
+  local project_key=$1
+  local project_log="$WORKSPACE/run-${project_key}.log"
+  local global_log="$WORKSPACE/run.log"
+  local log_file="$project_log"
+
+  [ -f "$log_file" ] || log_file="$global_log"
+  if [ ! -f "$log_file" ]; then
+    gum style --foreground 203 "  No run log found for $project_key."
+    return 0
+  fi
+
+  gum style --foreground 203 "  Last 5 log lines from $(basename "$log_file"):"
+  print_last_lines "$log_file" 5
 }
 
 get_exp_stats() {
@@ -2602,6 +2762,7 @@ preflight_check_dirty() {
 cmd_full_cycle() {
   local project_key=$1
   local passes=${2:-1}
+  local had_failures=0
 
   if [ -z "$project_key" ]; then
     gum style --foreground 203 "Usage: autoclaw run <project> [passes]"
@@ -2644,6 +2805,7 @@ cmd_full_cycle() {
         run_runner_once "$project_key" 1 "" "append"
       local rc=$?
       if [ $rc -ne 0 ]; then
+        had_failures=1
         gum style --foreground 203 "  Profile $profile failed (exit $rc)"
       fi
     done
@@ -2653,6 +2815,10 @@ cmd_full_cycle() {
 
   # Merge to main and push after full cycle
   merge_to_main "$project_key"
+  local merge_rc=$?
+
+  [ "$had_failures" -eq 0 ] || return 1
+  return "$merge_rc"
 }
 
 merge_to_main() {
@@ -3242,19 +3408,23 @@ cmd_doctor() {
   gum style --foreground 242 --bold "  TOOLCHAIN"
   echo ""
   doctor_check_command required bash "bash" || failures=$((failures + 1))
-  doctor_check_command required node "node" || failures=$((failures + 1))
-  doctor_check_command required pnpm "pnpm" || failures=$((failures + 1))
   doctor_check_command required python3 "python3" || failures=$((failures + 1))
   doctor_check_command required git "git" || failures=$((failures + 1))
   doctor_check_command required gh "gh" || failures=$((failures + 1))
   doctor_check_command required gum "gum" || failures=$((failures + 1))
-  doctor_check_command required claude "claude" || failures=$((failures + 1))
-  doctor_check_command required codex "codex" || failures=$((failures + 1))
   doctor_check_command required coderabbit "coderabbit" || failures=$((failures + 1))
   doctor_check_command required curl "curl" || failures=$((failures + 1))
   doctor_check_command required lsof "lsof" || failures=$((failures + 1))
   doctor_check_command optional launchctl "launchctl" || true
   doctor_check_command optional open "open" || true
+
+  echo ""
+  gum style --foreground 242 --bold "  VERSIONS"
+  echo ""
+  doctor_check_min_major_version node "node version" 20 --version || failures=$((failures + 1))
+  doctor_check_min_major_version pnpm "pnpm version" 9 --version || failures=$((failures + 1))
+  doctor_check_version_command claude "claude version" --version || failures=$((failures + 1))
+  doctor_check_version_command codex "codex version" --version || failures=$((failures + 1))
 
   echo ""
   gum style --foreground 242 --bold "  PATHS"
@@ -3302,12 +3472,114 @@ cmd_doctor() {
   fi
 
   echo ""
+  gum style --foreground 242 --bold "  PROJECTS"
+  echo ""
+  doctor_check_project_paths || failures=$((failures + 1))
+
+  echo ""
+  gum style --foreground 242 --bold "  DASHBOARD"
+  echo ""
+  doctor_check_dashboard_port || failures=$((failures + 1))
+
+  echo ""
   if [ "$failures" -gt 0 ]; then
     gum style --foreground 203 "  Doctor failed with $failures blocking issue(s)."
     return 1
   fi
 
   gum style --foreground 114 "  Doctor passed."
+}
+
+cmd_build_cli() {
+  local capture_log=""
+  capture_log=$(mktemp /tmp/autoclaw-build-XXXXXX.log)
+
+  "$REPO_ROOT/scripts/build.sh" "$@" 2>&1 | tee "$capture_log"
+  local rc=${PIPESTATUS[0]:-$?}
+
+  if [ "$rc" -ne 0 ]; then
+    local failed_items=""
+    failed_items=$(python3 - "$capture_log" <<'PY'
+import sys
+
+items = []
+with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if "✗ " in line:
+            items.append(line.split("✗ ", 1)[1].strip())
+
+for item in items[-10:]:
+    print(item)
+PY
+)
+
+    echo ""
+    gum style --foreground 203 --bold "Build verification failed."
+    if [ -n "$failed_items" ]; then
+      while IFS= read -r item; do
+        [ -n "$item" ] && gum style --foreground 203 "  - $item"
+      done <<< "$failed_items"
+    fi
+  fi
+
+  rm -f "$capture_log"
+  return "$rc"
+}
+
+cmd_review_cli() {
+  local capture_log=""
+  capture_log=$(mktemp /tmp/autoclaw-review-XXXXXX.log)
+
+  "$REPO_ROOT/scripts/deep-review.sh" "$@" 2>&1 | tee "$capture_log"
+  local rc=${PIPESTATUS[0]:-$?}
+
+  local provider_log=""
+  provider_log=$(python3 - "$capture_log" <<'PY'
+import sys
+
+log_path = ""
+with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+    for line in handle:
+        if line.startswith("Log     : "):
+            log_path = line.split("Log     : ", 1)[1].strip()
+
+print(log_path)
+PY
+)
+
+  if [ -n "$provider_log" ]; then
+    local output_size=""
+    output_size=$(python3 - "$provider_log" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+if not path.exists():
+    print(-1)
+else:
+    print(len(path.read_text(encoding="utf-8", errors="replace").strip()))
+PY
+)
+
+    if [ "${output_size:-0}" -eq 0 ]; then
+      echo ""
+      gum style --foreground 221 "Review produced no model output."
+      gum style --foreground 242 "Check the provider and retry with: autoclaw review <project> --claude or --codex"
+    fi
+  fi
+
+  rm -f "$capture_log"
+  return "$rc"
+}
+
+cmd_version() {
+  printf "AutoClawDev v%s\n" "$VERSION"
+  printf "  Node: %s\n" "$(tool_version_or_missing node --version)"
+  printf "  pnpm: %s\n" "$(tool_version_or_missing pnpm --version)"
+  printf "  Claude: %s\n" "$(tool_version_or_missing claude --version)"
+  printf "  Codex: %s\n" "$(tool_version_or_missing codex --version)"
+  printf "  Projects: %s\n" "$(get_projects | awk 'NF {count++} END {print count + 0}')"
+  printf "  Dashboard: %s\n" "$DASHBOARD_URL"
 }
 
 # ── Web Audit ────────────────────────────────────────────────────────
@@ -3431,9 +3703,9 @@ case "${1:-}" in
     fi
     ;;
   review|deep-review)
-    "$REPO_ROOT/scripts/deep-review.sh" "${@:2}" ;;
+    cmd_review_cli "${@:2}" ;;
   build)
-    "$REPO_ROOT/scripts/build.sh" "${@:2}" ;;
+    cmd_build_cli "${@:2}" ;;
   loop|wigman|ralph)
     shift
     _parse_profile_flag "$@"
@@ -3492,7 +3764,7 @@ case "${1:-}" in
     cmd_profile_wigman "$_profile" "${2:-}" "${3:-25}" "${4:-${AUTOCLAWDEV_MAX_PARALLEL_CYCLES:-3}}" ;;
 
   # ── Meta ───────────────────────────────────────────────────────────
-  version|--version|-V) printf "%s\n" "$VERSION" ;;
+  version|--version|-V) cmd_version ;;
   help|--help|-h) cmd_help ;;
   "")        cmd_interactive ;;
   *)         gum style --foreground 203 "Unknown command: $1"; echo ""; cmd_help ;;

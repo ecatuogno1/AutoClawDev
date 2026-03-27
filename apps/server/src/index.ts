@@ -17,12 +17,22 @@ import chatRouter from "./routes/chat.js";
 import workspaceRouter from "./routes/workspace.js";
 import { attachChatWebSocketServer } from "./chatSession/wsChatServer.js";
 import { attachTerminalWebSocketServer } from "./terminal/wsTerminalServer.js";
+import { listProjects } from "./lib/config.js";
 
 const app = express();
 const PORT = Number(process.env.PORT ?? 4100);
 
 app.use(cors());
 app.use(express.json());
+
+// Lightweight health probe for startup checks and CLI diagnostics.
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    port: PORT,
+    staticFilesAvailable: existsSync(webDist),
+  });
+});
 
 // API routes — order matters: specific routes before catch-all
 app.use("/api/health-matrix", healthRouter);
@@ -51,5 +61,27 @@ attachTerminalWebSocketServer(server);
 attachChatWebSocketServer(server);
 
 server.listen(PORT, () => {
-  console.log(`AutoClawDev server running on http://localhost:${PORT}`);
+  void (async () => {
+    const baseUrl = `http://localhost:${PORT}`;
+    const healthUrl = `${baseUrl}/api/health`;
+    const projects = await listProjects();
+    const staticFilesAvailable = existsSync(webDist);
+
+    let healthStatus = "unreachable";
+    try {
+      const response = await fetch(healthUrl);
+      healthStatus = `${response.status} ${response.ok ? "ok" : "error"}`;
+    } catch (error) {
+      healthStatus = error instanceof Error ? error.message : "unknown error";
+    }
+
+    console.log(`AutoClawDev server running on ${baseUrl}`);
+    console.log(`  Port: ${PORT}`);
+    console.log(`  Registered projects: ${projects.length}`);
+    console.log(`  Dashboard: ${baseUrl}`);
+    console.log(`  API health: ${healthStatus} (${healthUrl})`);
+    console.log(
+      `  Static files: ${staticFilesAvailable ? `available (${webDist})` : `missing (${webDist})`}`,
+    );
+  })();
 });

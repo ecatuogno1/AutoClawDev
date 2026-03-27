@@ -414,6 +414,15 @@ verify_phase() {
   echo ""
   echo "  Checklist: $passed/$total passed"
 
+  if [ -n "$VERIFY_FAILED_ITEMS" ]; then
+    echo ""
+    echo "  Failed criteria:"
+    while IFS= read -r failed_item; do
+      [ -n "$failed_item" ] || continue
+      echo "    - $failed_item"
+    done <<< "$(printf "%b" "$VERIFY_FAILED_ITEMS")"
+  fi
+
   [ "$passed" -ge "$total" ] && return 0
   return 1
 }
@@ -538,8 +547,13 @@ Implement ${PHASE_NAME} now. Do not stop until all criteria pass."
     else
       if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
         echo ""
-        echo "  Max attempts ($MAX_ATTEMPTS) reached. Moving to next phase."
-        phase_done=true
+        echo "  Build verification failed for ${PHASE_NAME} after $MAX_ATTEMPTS attempt(s)."
+        {
+          echo "ended_at=$(date -Iseconds)"
+          echo "failed_phase=$PHASE_NAME"
+          echo "failed_attempts=$attempt"
+        } | tee -a "$META_LOG"
+        exit 1
       else
         echo ""
         echo "  Retrying ($((attempt + 1))/$MAX_ATTEMPTS)..."
