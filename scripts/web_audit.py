@@ -11,6 +11,7 @@ Usage:
     python3 audit.py https://target-site.com --extract
     python3 audit.py https://target-site.com --extract --output /path/to/output
     python3 audit.py https://target-site.com --skip-extract --report-only
+    python3 audit.py https://target-site.com --mode hacker
 
 Requirements:
     pip3 install requests fpdf2 beautifulsoup4
@@ -32,7 +33,7 @@ import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from pathlib import Path
-from urllib.parse import urlparse, urljoin, parse_qs, urlencode
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 
 try:
     import requests
@@ -101,6 +102,23 @@ COMMON_PATHS = [
     "/_debug/", "/__debug__/",
     "/application.yml", "/application.properties",  # Spring
     "/env", "/env.json", "/config.js",
+]
+
+HACKER_EXTENDED_PATHS = [
+    "/api/internal", "/api/private", "/api/admin", "/api/debug", "/api/dev",
+    "/api/testing", "/api/beta", "/api/staging", "/api/prod", "/api/proxy",
+    "/api/v3", "/api/v4", "/api/v5", "/api/v9",
+    "/admin/.git", "/admin/config", "/admin/login", "/admin/health", "/admin/debug",
+    "/internal", "/internal-api", "/internal/health", "/internal/status",
+    "/internal/config", "/internal/debug", "/private", "/private/api", "/private/health",
+    "/backup", "/backup.zip", "/backup.tar", "/backups", "/dump", "/dump.sql",
+    "/old", "/old-api", "/old-api/v1", "/test", "/dev", "/stage", "/staging",
+    "/qa", "/sandbox", "/beta", "/alpha", "/build", "/config.json.bak",
+    "/.aws/credentials", "/.netrc", "/.bashrc", "/.dockerenv", "/.github/workflows",
+    "/.vscode", "/.idea", "/.svn", "/.hg", "/.DS_Store", "/server", "/settings",
+    "/.well-known/security.txt", "/.well-known/nodeinfo", "/.well-known/host-meta",
+    "/healthcheck", "/healthz", "/readme.md", "/.gitignore", "/package-lock.json",
+    "/composer.lock", "/Gemfile", "/requirements.txt", "/.env.production", "/.env.local",
 ]
 
 CORS_ORIGINS = [
@@ -251,6 +269,384 @@ REDIRECT_PARAM_NAMES = [
     "returnTo", "return_to",
 ]
 
+HACKER_REDIRECT_PAYLOADS = [
+    "///evil.com/%2f..", "////evil.com/%2f..", "https://%65%76%69%6C%2E%63%6F%6D",
+    "http://evil.com%2f.evil.com", "javascript:window.location='https://evil.com'",
+]
+OPEN_REDIRECT_BYPASS_SIGNATURES = [
+    "javascript:", "meta refresh", "window.location", "location.replace", "location.href",
+    "evil.com", "%2f%2fevil.com", "://evil.com", "data:", "vbscript:", "file://",
+    "http://", "https://", "\\\\", "%5c",
+]
+OPEN_REDIRECT_MAX_HOPS = 8
+REDIRECT_NORMALIZATION_BYPASS_PATTERNS = [
+    "/%2f%2fevil.com",
+    "/%5c%5cevil.com",
+    "https:%2f%2fevil.com",
+    "https:%2f%2f%65%76%69%6c%2E%63%6F%6D",
+    "http:%2f%2f%65%76%69%6c%2E%63%6F%6D",
+    "https://%2f%2f%65%76%69%6C%2E%63%6F%6D",
+    "http://%65%76%69%6C%2E%63%6F%6D",
+]
+REDIRECT_SCHEME_BYPASS_PAYLOADS = [
+    "javascript:window.location='https://evil.com'",
+    "data:text/html,<script>location='https://evil.com'</script>",
+    "vbscript:alert('x')",
+    "file://evil.com",
+    "\\\\evil.com",
+]
+
+HACKER_INJECTABLE_PARAMS = [
+    "token", "file", "path", "id", "user", "username", "password", "pass", "email",
+    "auth", "authorization", "api_key", "apikey", "key", "signature", "session", "next",
+    "return", "redirect", "url", "uri", "callback", "source", "dest", "destination",
+    "search", "query", "q", "page", "lang", "locale", "sort", "order", "filter",
+]
+
+FINDING_CATEGORY_MAP = {
+    "injection": {
+        "category": "Input Validation / Injection",
+        "impact": "Unauthenticated attacker can execute injected commands/queries or control application behavior.",
+        "attack_chain": "Input tampering -> server-side interpretation/execute",
+    },
+    "authentication": {
+        "category": "Authentication / Authorization",
+        "impact": "Unauthorized account or session manipulation enables account takeover or privilege escalation.",
+        "attack_chain": "Credential flow manipulation -> token/session acceptance",
+    },
+    "authorization": {
+        "category": "Authorization / Access Control",
+        "impact": "Bypassing intended access checks can lead to data leakage and unauthorized operations.",
+        "attack_chain": "Request without required identity context -> route/object-level bypass",
+    },
+    "misconfiguration": {
+        "category": "Security Configuration",
+        "impact": "Misconfigured platform/web server controls expose sensitive data or increase attack surface.",
+        "attack_chain": "Weak config -> exploit path or data exposure",
+    },
+    "disclosure": {
+        "category": "Information Disclosure",
+        "impact": "Operational or sensitive application details become visible and useful for follow-up attacks.",
+        "attack_chain": "Public endpoint -> sensitive content leakage",
+    },
+}
+
+FINDING_TRAITS = [
+    ("sql injection", "injection"),
+    ("sqli", "injection"),
+    ("command injection", "injection"),
+    ("path traversal", "injection"),
+    ("ssti", "injection"),
+    ("ssrf", "injection"),
+    ("xss", "injection"),
+    ("crlf", "injection"),
+    ("open redirect", "injection"),
+    ("host header", "injection"),
+    ("auth bypass", "authentication"),
+    ("unauthenticated api", "authorization"),
+    ("unauthenticated write", "authorization"),
+    ("idor", "authorization"),
+    ("mass assignment", "authorization"),
+    ("source map", "misconfiguration"),
+    ("missing ", "misconfiguration"),
+    ("waf", "misconfiguration"),
+    ("cors", "misconfiguration"),
+    ("no waf", "misconfiguration"),
+    ("http", "disclosure"),
+    ("debug", "disclosure"),
+    ("trace", "disclosure"),
+    ("stack", "disclosure"),
+    ("disclosure", "disclosure"),
+    ("graphql introspection", "disclosure"),
+]
+
+
+def _finding_metadata_for_finding(finding):
+    """Populate normalized reporting metadata for a finding."""
+    title = (finding.get("title") or "").lower()
+    category_key = None
+    for keyword, key in FINDING_TRAITS:
+        if keyword in title:
+            category_key = key
+            break
+
+    if category_key is None:
+        detail = (finding.get("detail") or "").lower()
+        for keyword, key in FINDING_TRAITS:
+            if keyword in detail:
+                category_key = key
+                break
+
+    template = FINDING_CATEGORY_MAP.get(category_key, {
+        "category": "General Security",
+        "impact": "May materially reduce confidentiality, integrity, or availability.",
+        "attack_chain": "Threat actor identifies weakness -> abuses exposed behavior.",
+    })
+
+    severity = (finding.get("severity") or "LOW").upper()
+    if severity in ("CRITICAL", "HIGH"):
+        likelihood = "High"
+        remediation_tier = "Immediate"
+    elif severity == "MEDIUM":
+        likelihood = "Medium"
+        remediation_tier = "Short-term"
+    elif severity == "LOW":
+        likelihood = "Low"
+        remediation_tier = "Planned"
+    else:
+        likelihood = "Low"
+        remediation_tier = "Monitoring"
+
+    finding.setdefault("category", template["category"])
+    finding.setdefault("impact", template["impact"])
+    finding.setdefault("likelihood", likelihood)
+    finding.setdefault("remediation_tier", remediation_tier)
+    finding.setdefault("attack_chain", template["attack_chain"])
+
+
+def _expand_redirect_payload_variants(payload):
+    """Build a small set of normalization/decode payload variants for bypass checks."""
+    variants = {payload}
+    if not payload:
+        return []
+    try:
+        variants.add(unquote(payload))
+        variants.add(unquote(unquote(payload)))
+    except Exception:
+        pass
+    variants.add(payload.replace("%2f", "/").replace("%2F", "/"))
+    variants.add(payload.replace("%5c", "/").replace("%5C", "/"))
+    variants.add(payload.replace("\\\\", "/").replace("\\", "/"))
+    try:
+        variants.add(quote(payload, safe=":/?&=%"))
+        variants.add(payload.lower())
+        variants.add(payload.upper())
+    except Exception:
+        pass
+    variants.update(REDIRECT_NORMALIZATION_BYPASS_PATTERNS)
+    variants.update(REDIRECT_SCHEME_BYPASS_PAYLOADS)
+    return list(variants)
+
+
+def _normalize_redirect_location(location):
+    """Normalize a redirect target for comparison and abuse checks."""
+    if not location:
+        return ""
+    normalized = location.strip()
+    if normalized.startswith("///"):
+        normalized = "https:" + normalized
+    try:
+        normalized = unquote(unquote(normalized))
+    except Exception:
+        pass
+    return normalized
+
+
+def _is_scheme_or_client_sink(location):
+    """Detect non-http/https redirect sinks commonly abused in open-redirect chains."""
+    if not location:
+        return False
+    lowered = location.lower().lstrip()
+    return any(
+        lowered.startswith(prefix)
+        for prefix in ("javascript:", "data:", "vbscript:", "file:", "about:")
+    ) or lowered.startswith("//")
+
+
+def _derive_exploitability_score(finding):
+    """Estimate exploitability on a 0-100 scale for triage ordering."""
+    base = {"CRITICAL": 95, "HIGH": 78, "MEDIUM": 58, "LOW": 34, "INFO": 12}
+    score = base.get((finding.get("severity") or "").upper(), 20)
+
+    title = (finding.get("title") or "").lower()
+    if "open redirect" in title or "open redirect" in (finding.get("detail") or "").lower():
+        score = max(score, 70)
+    if "auth bypass" in title or "privilege" in title:
+        score = max(score, 88)
+
+    if finding.get("external_redirect"):
+        score += 10
+    hops = finding.get("redirect_hops") or 0
+    if hops >= 3:
+        score += 10
+    elif hops == 2:
+        score += 6
+    if finding.get("bypass_signals"):
+        score += min(12, len(finding.get("bypass_signals")) * 4)
+
+    sink_location = (finding.get("normalized_redirect_target") or "").strip()
+    if not sink_location and isinstance(finding.get("redirect_chain_normalized"), list):
+        for hop in finding.get("redirect_chain_normalized", []):
+            if hop:
+                sink_location = hop
+                break
+    if _is_scheme_or_client_sink(sink_location):
+        score += 8
+    if isinstance(finding.get("evidence"), str) and "Location" in finding["evidence"]:
+        score += 4
+
+    chain = finding.get("redirect_chain")
+    if isinstance(chain, list) and len(chain) > 1:
+        score += 5
+
+    return max(0, min(100, score))
+
+
+def _build_attack_chain_graph(finding):
+    """Build a compact attack-chain graph used in reports."""
+    title = (finding.get("title") or "").lower()
+    if "open redirect" in title:
+        nodes = [
+            "Attacker controls redirect parameter",
+            "Server reflects/sanitizes URL",
+            "Response emits redirect endpoint",
+            "Client follows redirect flow",
+        ]
+        if finding.get("redirect_chain"):
+            for step in finding["redirect_chain"]:
+                hop_label = f"Hop {step.get('hop', '?')}: {step.get('status', '?')} to {step.get('url', '')}"
+                if step.get("location"):
+                    hop_label += f" via {step['location']}"
+                nodes.append(hop_label)
+        edges = [
+            {"from": i, "to": i + 1, "label": "next step"}
+            for i in range(max(0, len(nodes) - 1))
+        ]
+        return {"nodes": nodes[:20], "edges": edges}
+
+    default_nodes = [
+        "Attacker sends crafted request",
+        "Input reaches sensitive application path",
+        "Security control fails",
+        "Impactable state mutation or disclosure",
+    ]
+    edges = [
+        {"from": 0, "to": 1, "label": "input"},
+        {"from": 1, "to": 2, "label": "no validation"},
+        {"from": 2, "to": 3, "label": "abuse impact"},
+    ]
+    return {"nodes": default_nodes, "edges": edges}
+
+
+def _redirect_signature_in_body(body_text):
+    """Return known open-redirect bypass indicators found in response body."""
+    if not body_text:
+        return []
+    lowered = body_text.lower()
+    return [sig for sig in OPEN_REDIRECT_BYPASS_SIGNATURES if sig in lowered]
+
+
+def _is_external_redirect(location, source_url):
+    """Return True when location points to a different origin than source_url."""
+    if not location:
+        return False
+    lowered = location.lower()
+    if lowered.startswith("javascript:"):
+        return True
+    if lowered.startswith("//"):
+        return True
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        src = urlparse(source_url)
+        dest = urlparse(urljoin(source_url, location))
+        return (dest.hostname or "").lower() != (src.hostname or "").lower()
+    return False
+
+
+def _trace_redirect_chain(session, start_url, params, max_hops=OPEN_REDIRECT_MAX_HOPS):
+    """Follow server redirect chain and gather evidence for bypass-style checks."""
+    chain = []
+    current_url = start_url
+    current_params = params.copy()
+    seen = set()
+
+    for hop in range(1, max_hops + 1):
+        state = (current_url, tuple(sorted(current_params.items())))
+        if state in seen:
+            break
+        seen.add(state)
+
+        resp = safe_request(session, "GET", current_url, params=current_params, allow_redirects=False)
+        if resp is None:
+            break
+
+        location = resp.headers.get("Location", "")
+        body = (resp.text or "")[:3000]
+        body_signatures = _redirect_signature_in_body(body)
+
+        next_entry = {
+            "hop": hop,
+            "url": current_url,
+            "status": resp.status_code,
+            "location": location,
+            "external": _is_external_redirect(location, start_url),
+            "body_signatures": body_signatures,
+            "body_echoes_attack": "location=" in body.lower() or "return=" in body.lower() or "redirect=" in body.lower(),
+            "response_excerpt": (resp.text or "")[:500],
+        }
+        chain.append(next_entry)
+
+        if resp.status_code not in (301, 302, 303, 307, 308):
+            break
+        if not location:
+            break
+
+        current_url = urljoin(current_url, location)
+        current_params = {}
+
+    return chain
+
+
+def _build_hacker_risk_metrics(findings):
+    """Build hacker-mode-focused risk summary metrics."""
+    open_redirect_findings = [
+        f for f in findings
+        if "open redirect" in (f.get("title", "").lower())
+    ]
+    external_redirect = [f for f in open_redirect_findings if f.get("external_redirect")]
+    chained_redirects = [f for f in open_redirect_findings if f.get("redirect_hops", 0) > 1]
+    bypass_candidates = [
+        f for f in open_redirect_findings
+        if f.get("bypass_signals") and len(f.get("bypass_signals", [])) > 0
+    ]
+    return {
+        "mode": "hacker",
+        "hacker_attack_surface": {
+            "open_redirect_findings": len(open_redirect_findings),
+            "external_redirect_findings": len(external_redirect),
+            "multi_hop_redirect_findings": len(chained_redirects),
+            "bypass_indicator_findings": len(bypass_candidates),
+            "max_redirect_hops_seen": max((f.get("redirect_hops", 0) for f in open_redirect_findings), default=0),
+        },
+        "hacker_fix_roadmap": [
+            {
+                "goal": "Stop open redirect chains to attacker-controlled locations",
+                "steps": [
+                    "Validate redirect parameters against an allowlist and a strict URI parser.",
+                    "Normalize and reject scheme-relative, javascript:, and encoded external locations.",
+                ],
+                "evidence_key": "external_redirect",
+            },
+            {
+                "goal": "Prevent script and metadata based redirect sinks",
+                "steps": [
+                    "Scan server-side templates for user-controlled redirects before templating.",
+                    "Disable server-side template/client-side assignment of raw redirect URLs.",
+                    "Forbid `meta refresh` and JS location assignments that source user input.",
+                ],
+                "evidence_key": "bypass_indicator_findings",
+            },
+            {
+                "goal": "Harden route-level behavior",
+                "steps": [
+                    "Use fixed post-auth target routes for return flows and one-time state tokens.",
+                    "Reject open return paths in auth/password-reset/deeplink handlers.",
+                    "Add integration tests for all redirect endpoints with hostile inputs.",
+                ],
+                "evidence_key": "multi_hop_redirect_findings",
+            },
+        ],
+    }
+
 # --- WAF Detection ---
 
 WAF_SIGNATURES = {
@@ -295,6 +691,48 @@ JWT_SENSITIVE_CLAIMS = [
     "credit_card", "card_number", "cvv", "pin",
     "private_key", "api_key", "access_key",
 ]
+
+def _dedupe_preserve_order(items):
+    """Return a list with duplicates removed while preserving order."""
+    seen = set()
+    deduped = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
+
+
+def _build_finding_dedupe_key(finding):
+    """Build a compact dedupe signature with mode-aware normalization."""
+    title = (finding.get("title") or "").lower()
+    severity = finding.get("severity", "")
+    category = finding.get("category", "")
+    path = finding.get("path", "")
+    param = finding.get("param", "")
+    chain = finding.get("normalized_redirect_target", "")
+    if "open redirect" in title:
+        chain = (chain or "").lower()
+        if not chain and isinstance(finding.get("redirect_chain_normalized"), list):
+            chain = next((item for item in finding["redirect_chain_normalized"] if item), "")
+        return (
+            "open-redirect",
+            severity,
+            category,
+            path,
+            param,
+            (chain or "").lower(),
+            finding.get("redirect_hops", 0),
+        )
+    return (
+        severity,
+        finding.get("title", ""),
+        category,
+        path,
+        param,
+        (finding.get("evidence") or "")[:240],
+    )
 
 GRAPHQL_INTROSPECTION_QUERY = (
     '{"query":"{__schema{types{name,fields{name,type{name,kind}}}'
@@ -364,8 +802,29 @@ class Logger:
 log = Logger()
 
 
+def _build_proxy_config(proxy_url, proxy_username=None, proxy_password=None):
+    """Build requests-compatible proxy mapping, with optional credentials."""
+    if not proxy_url:
+        return {}
+
+    parsed = urlparse(proxy_url)
+    scheme = parsed.scheme.lower()
+    if not scheme or not parsed.netloc:
+        return {}
+
+    host = parsed.netloc.split("@")[-1]
+    if (proxy_username is not None or proxy_password is not None) and not (parsed.username or parsed.password):
+        user = quote(proxy_username or "")
+        pwd = quote(proxy_password or "")
+        auth = f"{user}:{pwd}@" if user or pwd else ""
+        proxy_url = f"{scheme}://{auth}{host}"
+
+    return {"http": proxy_url, "https": proxy_url}
+
+
 def make_session(target_url, bearer_token=None, cookie=None,
-                 api_key=None, api_key_header="X-API-Key"):
+                 api_key=None, api_key_header="X-API-Key",
+                 proxies=None, trust_env_proxies=True):
     """Create a requests session with standard config and optional auth credentials."""
     s = requests.Session()
     s.headers.update({"User-Agent": USER_AGENT})
@@ -375,6 +834,9 @@ def make_session(target_url, bearer_token=None, cookie=None,
         s.headers.update({"Cookie": cookie})
     if api_key:
         s.headers.update({api_key_header: api_key})
+    if proxies:
+        s.proxies.update(proxies)
+    s.trust_env = trust_env_proxies
     s.verify = True
     s.timeout = REQUEST_TIMEOUT
     return s
@@ -403,6 +865,236 @@ def is_same_content(resp, baseline_hash):
     if resp is None:
         return True
     return hash(resp.content) == baseline_hash
+
+
+def severity_score(severity):
+    """Map severity labels to numerical weights for ranking/aggregation."""
+    return {"CRITICAL": 10, "HIGH": 7, "MEDIUM": 4, "LOW": 2, "INFO": 1}.get(
+        (severity or "").upper(), 0
+    )
+
+
+def build_risk_profile(findings, accessible_endpoints, writable_endpoints, extraction_stats, mode="standard"):
+    """Build an attack-readiness risk score with easy triage guidance."""
+    counts = {}
+    for finding in findings:
+        counts[finding["severity"]] = counts.get(finding["severity"], 0) + 1
+
+    raw_score = sum(severity_score(f["severity"]) for f in findings)
+    max_score = len(findings) * 10 if findings else 1
+    normalized = round((raw_score / max_score) * 100, 1)
+
+    access_exposure = len(accessible_endpoints or [])
+    write_exposure = len(writable_endpoints or [])
+    extracted_records = sum(e.get("records", 0) for e in (extraction_stats or []))
+
+    impact_boost = min(40, access_exposure * 3 + write_exposure * 8)
+    extraction_boost = min(10, extracted_records / 100) * 10 if extracted_records else 0
+    # Clamp final score to 0-100
+    overall = max(0, min(100, round(0.75 * normalized + impact_boost + extraction_boost, 1)))
+
+    if overall >= 80:
+        level = "CRITICAL"
+    elif overall >= 60:
+        level = "HIGH"
+    elif overall >= 35:
+        level = "MEDIUM"
+    elif overall > 10:
+        level = "LOW"
+    else:
+        level = "INFO"
+
+    priorities = [
+        ("Critical auth/session and write-path issues", "HIGH"),
+        ("Unauthenticated public data endpoints", "HIGH"),
+        ("Input injection and server-side trust boundaries", "MEDIUM"),
+        ("Header, cookie, and transport hardening", "MEDIUM"),
+        ("Operational hygiene and observability", "LOW"),
+    ]
+    ordered = sorted(
+        priorities,
+        key=lambda item: -{"HIGH": 3, "MEDIUM": 2, "LOW": 1}.get(item[1], 0),
+    )
+    remediation_order = [p[0] for p in ordered]
+
+    risk_profile = {
+        "overall_risk_score": overall,
+        "risk_level": level,
+        "finding_count": len(findings),
+        "finding_counts": counts,
+        "accessible_endpoints": access_exposure,
+        "writable_endpoints": write_exposure,
+        "extracted_records": extracted_records,
+        "remediation_order": remediation_order,
+        "mode": mode,
+    }
+    if mode == "hacker":
+        risk_profile.update(_build_hacker_risk_metrics(findings))
+    return risk_profile
+
+
+def export_findings_csv(output_dir, findings):
+    """Export findings to a CSV file for SIEM/issue tracking workflows."""
+    if not findings:
+        return None
+
+    out_path = Path(output_dir) / "findings.csv"
+    headers = [
+        "index", "severity", "title", "category", "impact", "likelihood",
+        "remediation_tier", "attack_chain", "attack_chain_graph", "exploitability_score",
+        "detail", "evidence", "remediation", "risk_weight",
+    ]
+    with out_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=headers)
+        writer.writeheader()
+        for idx, finding in enumerate(findings, 1):
+            graph = finding.get("attack_chain_graph", {})
+            if isinstance(graph, dict):
+                graph_csv = json.dumps(graph, ensure_ascii=False)
+            else:
+                graph_csv = json.dumps({"nodes": [], "edges": []})
+            writer.writerow({
+                "index": idx,
+                "severity": finding.get("severity", ""),
+                "title": finding.get("title", ""),
+                "category": finding.get("category", "Security"),
+                "impact": finding.get("impact", ""),
+                "likelihood": finding.get("likelihood", ""),
+                "remediation_tier": finding.get("remediation_tier", ""),
+                "attack_chain": finding.get("attack_chain", ""),
+                "attack_chain_graph": graph_csv,
+                "exploitability_score": finding.get("exploitability_score", ""),
+                "detail": finding.get("detail", ""),
+                "evidence": finding.get("evidence", ""),
+                "remediation": finding.get("remediation", ""),
+                "risk_weight": severity_score(finding.get("severity", "")),
+            })
+    return str(out_path)
+
+
+def export_html_report(output_dir, target, findings, risk_profile, extraction_stats):
+    """Create a lightweight HTML report for quick sharing."""
+    out_path = Path(output_dir) / "security_report.html"
+    rows = []
+    for idx, finding in enumerate(findings, 1):
+        sev = (finding.get("severity") or "").upper()
+        graph = finding.get("attack_chain_graph") or {}
+        nodes = []
+        if isinstance(graph, dict):
+            nodes = graph.get("nodes", [])
+        graph_label = " | ".join(nodes[:3])
+        if len(nodes) > 3:
+            graph_label += " ..."
+        rows.append(
+            f"""
+            <tr class=\"{sev.lower()}\">
+              <td>{idx}</td>
+              <td>{sev}</td>
+              <td>{finding.get('title', '')}</td>
+              <td>{finding.get('category', 'Security')}</td>
+              <td>{finding.get('impact', 'No impact summary provided')}</td>
+              <td>{finding.get('likelihood', 'Low')}</td>
+              <td>{finding.get('remediation_tier', 'Planned')}</td>
+              <td>{finding.get('attack_chain', 'Threat actor discovers and exploits weakness')}</td>
+              <td>{finding.get('exploitability_score', '')}</td>
+              <td>{graph_label}</td>
+              <td>{finding.get('detail', '')}</td>
+            </tr>
+            """
+        )
+
+    summary = []
+    for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]:
+        count = risk_profile.get("finding_counts", {}).get(sev, 0)
+        summary.append(f"<li>{sev}: {count}</li>")
+
+    extraction = []
+    if extraction_stats:
+        for item in extraction_stats:
+            extraction.append(
+                f"<li>{item['file']} &mdash; {item['records']} records from {item['route']}</li>"
+            )
+
+    hacker_sections = ""
+    if risk_profile.get("mode") == "hacker":
+        attack_surface = risk_profile.get("hacker_attack_surface", {})
+        roadmap = risk_profile.get("hacker_fix_roadmap", [])
+        hacker_sections = f"""
+        <div class=\"card\">
+          <h2>Hacker Attack Surface</h2>
+          <ul>
+            <li>Open redirect findings: {attack_surface.get('open_redirect_findings', 0)}</li>
+            <li>External redirect sink findings: {attack_surface.get('external_redirect_findings', 0)}</li>
+            <li>Multi-hop redirect findings: {attack_surface.get('multi_hop_redirect_findings', 0)}</li>
+            <li>Bypass indicators detected: {attack_surface.get('bypass_indicator_findings', 0)}</li>
+            <li>Maximum redirect hops observed: {attack_surface.get('max_redirect_hops_seen', 0)}</li>
+          </ul>
+          <h3>Remediation Roadmap</h3>
+          <ol>
+            {''.join(
+                f'<li><strong>{item.get("goal", "Remediation goal")}</strong><ul>'
+                + ''.join(f'<li>{step}</li>' for step in item.get("steps", []))
+                + '</ul></li>' for item in roadmap)
+            }
+          </ol>
+        </div>
+        """
+
+    html = f"""
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset=\"utf-8\" />
+      <title>Web Security Audit - {target}</title>
+      <style>
+        body {{ font-family: Arial, sans-serif; background:#f4f6fb; color:#10131a; }}
+        .container {{ max-width: 1080px; margin: 0 auto; padding: 24px; }}
+        h1 {{ color:#1d2a6b; }}
+        table {{ width:100%; border-collapse: collapse; background: white; }}
+        th, td {{ padding: 8px 10px; border: 1px solid #ccd0dc; text-align: left; }}
+        th {{ background: #1d2a6b; color: white; }}
+        .critical {{ background: #ffe7e7; }}
+        .high {{ background: #fff1d6; }}
+        .medium {{ background: #fffbe6; }}
+        .low {{ background: #eef6ff; }}
+        .info {{ background: #f4f4f4; }}
+        .card {{ background:white; border:1px solid #d7deef; padding:16px; margin-bottom:16px; }}
+      </style>
+    </head>
+    <body>
+      <div class=\"container\">
+        <h1>Web Security Audit</h1>
+        <div class=\"card\">
+          <p><strong>Target:</strong> {target}</p>
+          <p><strong>Risk Score:</strong> {risk_profile['overall_risk_score']}/100 ({risk_profile['risk_level']})</p>
+          <p><strong>Findings:</strong> {len(findings)}</p>
+          <ul>{''.join(summary)}</ul>
+        </div>
+        <div class=\"card\">
+          <h2>Top Remediation Priorities</h2>
+          <ul>
+            {''.join(f"<li>{item}</li>" for item in risk_profile.get('remediation_order', []))}
+          </ul>
+        </div>
+        <div class=\"card\">
+          <h2>Findings</h2>
+          <table>
+            <tr><th>#</th><th>Severity</th><th>Title</th><th>Category</th><th>Impact</th><th>Likelihood</th><th>Remediation Tier</th><th>Attack Chain</th><th>Exploitability</th><th>Chain Preview</th><th>Detail</th></tr>
+            {''.join(rows)}
+          </table>
+        </div>
+        <div class=\"card\">
+          <h2>Data Extraction</h2>
+          <ul>{''.join(extraction) if extraction else '<li>No extraction run</li>'}</ul>
+        </div>
+        {hacker_sections}
+      </div>
+    </body>
+    </html>
+    """
+
+    out_path.write_text(html, encoding="utf-8")
+    return str(out_path)
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +1169,7 @@ def recon_headers(session, target):
     return findings, headers
 
 
-def recon_tls(target):
+def recon_tls(session, target):
     """Check TLS certificate and protocol support."""
     log.section("TLS/SSL Analysis")
     findings = []
@@ -523,8 +1215,10 @@ def recon_tls(target):
     if parsed.scheme == "https":
         http_url = target.replace("https://", "http://", 1)
         try:
-            resp = requests.get(http_url, allow_redirects=False, timeout=10,
-                                headers={"User-Agent": USER_AGENT})
+            resp = safe_request(session, "GET", http_url, allow_redirects=False,
+                               headers={"User-Agent": USER_AGENT}, timeout=10)
+            if resp is None:
+                raise RuntimeError("Empty response")
             if resp.status_code in (301, 302, 307, 308):
                 location = resp.headers.get("Location", "")
                 if location.startswith("https://"):
@@ -738,23 +1432,27 @@ def probe_path(session, target, path, baseline_hash):
     }
 
 
-def discover_paths(session, target, baseline_hash):
-    """Probe common paths for exposed resources (parallelized)."""
+def discover_paths(session, target, baseline_hash, mode="standard"):
+    """Probe known and extended paths for exposed resources (parallelized)."""
     log.section("Path Enumeration")
     found = []
     counter = [0]
     lock = threading.Lock()
+    paths = list(COMMON_PATHS)
+    if mode == "hacker":
+        paths.extend(HACKER_EXTENDED_PATHS)
+    paths = _dedupe_preserve_order(paths)
 
     with ThreadPoolExecutor(max_workers=10) as executor:
         futures = {
             executor.submit(probe_path, session, target, path, baseline_hash): path
-            for path in COMMON_PATHS
+            for path in paths
         }
         for future in as_completed(futures):
             result = future.result()
             with lock:
                 counter[0] += 1
-                log.progress(counter[0], len(COMMON_PATHS), "Probing paths")
+                log.progress(counter[0], len(paths), "Probing paths")
                 if result:
                     found.append(result)
                     log.finding(
@@ -766,7 +1464,7 @@ def discover_paths(session, target, baseline_hash):
     return found
 
 
-def discover_js_endpoints(session, target):
+def discover_js_endpoints(session, target, mode="standard"):
     """Parse HTML for JS bundles, then extract API routes from them."""
     log.section("JavaScript Bundle Analysis")
     api_routes = []
@@ -821,6 +1519,13 @@ def discover_js_endpoints(session, target):
             r'["\'](/v[0-9]+/[a-zA-Z0-9/_\-:.]+)["\']',
             r'["\'](/graphql)["\']',
         ]
+        if mode == "hacker":
+            route_patterns.extend([
+                r'["\'](/admin/[a-zA-Z0-9/_\-:.]+)["\']',
+                r'["\'](/internal/[a-zA-Z0-9/_\-:.]+)["\']',
+                r'["\'](/private/[a-zA-Z0-9/_\-:.]+)["\']',
+                r'["\'](/api/v[0-9]+/[a-zA-Z0-9/_\-:.]+)["\']',
+            ])
         for pattern in route_patterns:
             for match in re.findall(pattern, js_code):
                 clean = re.sub(r'["\']', '', match).split('?')[0]
@@ -869,6 +1574,30 @@ def discover_js_endpoints(session, target):
         if react_match:
             tech_info["react_version"] = react_match.group(1)
 
+    if mode == "hacker":
+        # Also inspect inline scripts for endpoint literals and request calls.
+        inline_scripts = soup.find_all("script", src=False)
+        for inline in inline_scripts:
+            inline_code = inline.string or inline.get_text() or ""
+            if not inline_code:
+                continue
+            for match in re.findall(r'["\'](/(?:api|admin|internal|private|v[0-9]+|graphql)[a-zA-Z0-9/_\-:.]*)["\']', inline_code):
+                clean = match.split("?")[0]
+                if clean and clean not in api_routes:
+                    api_routes.append(clean)
+
+            for m in re.findall(r'(?:fetch|axios\\.(?:get|post|put|patch|delete)?)\\((["\'][^"\']+["\'])', inline_code):
+                raw_url = m.strip().strip('"\'')
+                if raw_url.startswith("http") and not any(x in raw_url for x in [target, urlparse(target).hostname or ""]):
+                    continue
+                if raw_url.startswith(("http://", "https://")):
+                    candidate = urlparse(raw_url).path
+                else:
+                    candidate = raw_url
+                candidate = candidate.split("?")[0]
+                if candidate.startswith("/") and candidate not in api_routes:
+                    api_routes.append(candidate)
+
     log.info(f"Discovered {len(api_routes)} API routes from JS bundles")
     for r in sorted(api_routes):
         log.info(f"  {r}")
@@ -876,7 +1605,7 @@ def discover_js_endpoints(session, target):
     return api_routes, all_urls, tech_info, js_file_urls
 
 
-def parse_openapi_spec(session, target, found_paths):
+def parse_openapi_spec(session, target, found_paths, mode="standard"):
     """Discover additional API routes by parsing any OpenAPI/Swagger spec files found."""
     log.section("OpenAPI/Swagger Spec Discovery")
     routes = []
@@ -892,6 +1621,24 @@ def parse_openapi_spec(session, target, found_paths):
                  "/swagger/v1/swagger.json", "/v2/api-docs"]:
         if path not in spec_paths_found:
             candidates.append(path)
+    if mode == "hacker":
+        candidates.extend([
+            "/swagger/v2/swagger.json",
+            "/swagger/v3/swagger.json",
+            "/swagger/v1/api-docs",
+            "/swagger/v2/api-docs",
+            "/api/v1/openapi.json",
+            "/api/v2/openapi.json",
+            "/api/openapi.json",
+            "/api/v1/swagger.json",
+            "/api/v2/swagger.json",
+            "/api-docs/swagger.json",
+        ])
+        for i in range(1, 9):
+            candidates.append(f"/api-spec/v{i}")
+            candidates.append(f"/api-docs/v{i}")
+
+    candidates = _dedupe_preserve_order(candidates)
 
     for candidate in candidates:
         url = urljoin(target, candidate)
@@ -1303,7 +2050,10 @@ def check_rate_limiting(session, target):
     blocked = False
 
     for i in range(rapid_count):
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=REQUEST_TIMEOUT)
+        resp = safe_request(session, "GET", url, headers={"User-Agent": USER_AGENT})
+        if resp is None:
+            log.error("Rate limiting check request failed; skipping remaining checks")
+            break
         if resp.status_code == 429:
             blocked = True
             log.ok(f"Rate limiting active (429 after {i + 1} requests)")
@@ -1378,28 +2128,43 @@ def check_upload_endpoints(session, target, api_routes):
 # Phase 3A: Injection Testing
 # ---------------------------------------------------------------------------
 
-def _extract_injectable_params(session, target, api_routes, baseline_hash):
+def _extract_injectable_params(session, target, api_routes, baseline_hash, mode="standard"):
     """Identify injectable parameters from discovered routes."""
     params = []
+    seen = set()
     common_params = ["q", "id", "search", "file", "path", "url", "name",
                      "page", "query", "s", "keyword", "input", "data",
                      "redirect", "return", "next", "callback", "ref"]
 
-    for route in api_routes[:30]:  # Cap to avoid excessive requests
+    if mode == "hacker":
+        for p in HACKER_INJECTABLE_PARAMS:
+            if p not in common_params:
+                common_params.append(p)
+
+    # Cap request volume in standard mode
+    routes_to_test = api_routes[:30] if mode != "hacker" else api_routes
+
+    for route in routes_to_test:
         url = urljoin(target, route)
         # Try each common param
         for p in common_params:
             test_url = f"{url}?{p}=testvalue123"
             resp = safe_request(session, "GET", test_url)
             if resp and resp.status_code != 404 and not is_same_content(resp, baseline_hash):
-                params.append({"url": url, "param": p, "method": "GET"})
-                break  # One param per route is enough for testing
+                key = f"{url}:{p}"
+                if key not in seen:
+                    seen.add(key)
+                    params.append({"url": url, "param": p, "method": "GET"})
+
+                # Standard mode keeps discovery lightweight.
+                if mode != "hacker":
+                    break
 
     log.info(f"Identified {len(params)} injectable parameter targets")
     return params
 
 
-def test_sqli(session, target, injectable_params):
+def test_sqli(session, target, injectable_params, mode="standard"):
     """Test for SQL injection vulnerabilities."""
     log.section("SQL Injection Testing")
     findings = []
@@ -1430,7 +2195,8 @@ def test_sqli(session, target, injectable_params):
                         "evidence": f"Payload: {payload}\nSignature: {sig}\nResponse excerpt: {resp.text[:300]}",
                         "remediation": "Use parameterized queries / prepared statements. Never concatenate user input into SQL strings.",
                     })
-                    return findings  # One confirmed SQLi is enough
+                    if mode != "hacker":
+                        return findings  # One confirmed SQLi is enough
 
             # Time-based blind (only for SLEEP/WAITFOR payloads)
             if "SLEEP" in payload or "WAITFOR" in payload:
@@ -1447,13 +2213,15 @@ def test_sqli(session, target, injectable_params):
                         "evidence": f"Payload: {payload}\nResponse time: {elapsed:.1f}s (baseline <1s)",
                         "remediation": "Use parameterized queries. Investigate why the application processes delay-inducing SQL payloads.",
                     })
+                    if mode != "hacker":
+                        return findings
 
     if not findings:
         log.ok("No SQL injection vulnerabilities detected")
     return findings
 
 
-def test_reflected_xss(session, target, injectable_params):
+def test_reflected_xss(session, target, injectable_params, mode="standard"):
     """Test for reflected XSS vulnerabilities."""
     log.section("Reflected XSS Testing")
     findings = []
@@ -1482,14 +2250,15 @@ def test_reflected_xss(session, target, injectable_params):
                         "evidence": f"Payload: {payload}\nReflected in response body (Content-Type: {content_type})",
                         "remediation": "HTML-encode all user input before rendering. Use Content-Security-Policy to prevent inline script execution.",
                     })
-                    return findings
+                    if mode != "hacker":
+                        return findings
 
     if not findings:
         log.ok("No reflected XSS vulnerabilities detected")
     return findings
 
 
-def test_command_injection(session, target, injectable_params):
+def test_command_injection(session, target, injectable_params, mode="standard"):
     """Test for OS command injection."""
     log.section("Command Injection Testing")
     findings = []
@@ -1516,14 +2285,15 @@ def test_command_injection(session, target, injectable_params):
                         "evidence": f"Payload: {payload}\nSignature: {sig}\nResponse: {body[:300]}",
                         "remediation": "Never pass user input to shell commands. Use language-native APIs instead of shell execution.",
                     })
-                    return findings
+                    if mode != "hacker":
+                        return findings
 
     if not findings:
         log.ok("No command injection vulnerabilities detected")
     return findings
 
 
-def test_path_traversal(session, target, injectable_params):
+def test_path_traversal(session, target, injectable_params, mode="standard"):
     """Test for path traversal / LFI vulnerabilities."""
     log.section("Path Traversal / LFI Testing")
     findings = []
@@ -1549,14 +2319,15 @@ def test_path_traversal(session, target, injectable_params):
                         "evidence": f"Payload: {payload}\nSignature: {sig}\nResponse: {resp.text[:300]}",
                         "remediation": "Validate and sanitize file paths. Use a whitelist of allowed files. Never use user input in file system operations directly.",
                     })
-                    return findings
+                    if mode != "hacker":
+                        return findings
 
     if not findings:
         log.ok("No path traversal vulnerabilities detected")
     return findings
 
 
-def test_ssti(session, target, injectable_params):
+def test_ssti(session, target, injectable_params, mode="standard"):
     """Test for Server-Side Template Injection."""
     log.section("SSTI Testing")
     findings = []
@@ -1576,14 +2347,15 @@ def test_ssti(session, target, injectable_params):
                     "evidence": f"Payload: {payload}\nExpected: {expected}\nFound in response body",
                     "remediation": "Never pass user input into template rendering contexts. Use sandboxed template engines and escape all inputs.",
                 })
-                return findings
+                if mode != "hacker":
+                    return findings
 
     if not findings:
         log.ok("No SSTI vulnerabilities detected")
     return findings
 
 
-def test_ssrf(session, target, injectable_params):
+def test_ssrf(session, target, injectable_params, mode="standard"):
     """Test for Server-Side Request Forgery."""
     log.section("SSRF Testing")
     findings = []
@@ -1611,19 +2383,21 @@ def test_ssrf(session, target, injectable_params):
                     "evidence": f"Payload: {ssrf_target}\nResponse contains cloud metadata indicators",
                     "remediation": "Validate and whitelist URLs. Block requests to internal/metadata IPs (169.254.x.x, 127.x.x.x, 10.x.x.x). Use a URL parser to reject private addresses.",
                 })
-                return findings
+                if mode != "hacker":
+                    return findings
 
     if not findings:
         log.ok("No SSRF vulnerabilities detected")
     return findings
 
 
-def test_crlf_injection(session, target, injectable_params):
+def test_crlf_injection(session, target, injectable_params, mode="standard"):
     """Test for CRLF injection (HTTP header injection)."""
     log.section("CRLF Injection Testing")
     findings = []
 
-    for ip in injectable_params[:15]:
+    injectable = injectable_params[:15] if mode != "hacker" else injectable_params
+    for ip in injectable:
         url, param = ip["url"], ip["param"]
         payload = "testvalue%0d%0aX-Injected:%20true"
         resp = safe_request(session, "GET", url, params={param: payload},
@@ -1639,40 +2413,172 @@ def test_crlf_injection(session, target, injectable_params):
                 "evidence": f"Payload: {payload}\nInjected header 'X-Injected' found in response headers",
                 "remediation": "Strip or reject CR (\\r) and LF (\\n) characters from all user input used in HTTP headers.",
             })
-            return findings
+            if mode != "hacker":
+                return findings
 
     if not findings:
         log.ok("No CRLF injection vulnerabilities detected")
     return findings
 
 
-def test_open_redirect(session, target, api_routes, found_paths):
+def test_open_redirect(session, target, api_routes, found_paths, mode="standard"):
     """Test for open redirect vulnerabilities."""
     log.section("Open Redirect Testing")
     findings = []
 
     # Test against routes that could handle redirects
-    test_urls = [urljoin(target, r) for r in api_routes[:20]]
+    if mode == "hacker":
+        test_urls = [urljoin(target, r) for r in api_routes]
+        test_urls.extend(urljoin(target, fp["path"]) for fp in found_paths
+                         if fp.get("path") and fp["path"] not in api_routes)
+    else:
+        test_urls = [urljoin(target, r) for r in api_routes[:20]]
     test_urls.append(target)
 
+    payloads = HACKER_REDIRECT_PAYLOADS if mode == "hacker" else OPEN_REDIRECT_PAYLOADS
+    param_names = REDIRECT_PARAM_NAMES if mode != "hacker" else list(dict.fromkeys(
+        REDIRECT_PARAM_NAMES + ["target", "target_url", "next_url", "return_to", "continue_to", "redir_to"]
+    ))
+
+    seen = set()
+
     for url in test_urls:
-        for param_name in REDIRECT_PARAM_NAMES[:8]:
-            for payload in OPEN_REDIRECT_PAYLOADS[:4]:
-                resp = safe_request(session, "GET", url, params={param_name: payload},
-                                    allow_redirects=False)
-                if resp is None:
+        for param_name in param_names:
+            payload_set = set(payloads) if mode != "hacker" else set()
+            if mode == "hacker":
+                for payload in payloads:
+                    payload_set.update(_expand_redirect_payload_variants(payload))
+
+            for payload in payload_set:
+                seen_key = f"{url}:{param_name}" if mode != "hacker" else f"{url}:{param_name}:{payload}"
+                if seen_key in seen:
                     continue
-                location = resp.headers.get("Location", "")
-                if "evil.com" in location:
-                    log.finding("MEDIUM", f"Open redirect via {param_name}@{urlparse(url).path}")
-                    findings.append({
-                        "title": f"Open Redirect ({param_name} parameter)",
-                        "severity": "MEDIUM",
-                        "detail": f"The server redirects to an attacker-controlled URL when '{param_name}' is set.",
-                        "evidence": f"Payload: ?{param_name}={payload}\nLocation: {location}",
-                        "remediation": "Validate redirect targets against a whitelist of allowed domains. Use relative paths for internal redirects.",
-                    })
-                    return findings
+                seen.add(seen_key)
+                if mode == "hacker":
+                    chain = _trace_redirect_chain(session, url, {param_name: payload})
+                    if not chain:
+                        continue
+                    final = chain[-1]
+                    location = final["location"]
+                    normalized_final = _normalize_redirect_location(location)
+                    body_signatures = final["body_signatures"]
+                    external_seen = False
+                    chain_signals = []
+                    normalized_chain = []
+
+                    for step in chain:
+                        norm_loc = _normalize_redirect_location(step.get("location", ""))
+                        step["normalized_location"] = norm_loc
+                        normalized_chain.append(norm_loc)
+                        if step.get("external") or _is_scheme_or_client_sink(norm_loc):
+                            external_seen = True
+                        chain_signals.extend(step.get("body_signatures", []))
+                        if _is_scheme_or_client_sink(norm_loc):
+                            chain_signals.append("client_or_scheme_sink")
+                        if step.get("body_echoes_attack"):
+                            chain_signals.append("response_body_redirect_echo")
+
+                    max_hops = len(chain)
+                    body_sink = any(step.get("body_echoes_attack") for step in chain)
+                    bypass = len(body_signatures) > 0 or body_sink
+                    normalized_evil_sink = (
+                        "evil.com" in normalized_final.lower()
+                        or _is_scheme_or_client_sink(normalized_final)
+                    )
+                    external_redirect_hit = bool(external_seen or normalized_evil_sink)
+
+                    if external_redirect_hit:
+                        evidence_chain = "\n".join(
+                            [
+                                f"hop {step['hop']}: {step['status']} -> {step['url']} "
+                                f"Location={step['location']} normalized={step['normalized_location']} external={step['external']}"
+                                + (f" sigs={','.join(step['body_signatures'])}"
+                                   if step["body_signatures"] else "")
+                                for step in chain
+                            ]
+                        )
+                        severity = "CRITICAL" if bypass else "HIGH"
+                        findings.append({
+                            "path": urlparse(url).path,
+                            "param": param_name,
+                            "title": f"Hacker Open Redirect ({param_name} parameter)",
+                            "severity": severity,
+                            "detail": (
+                                f"Hacker-mode detected redirect-chain behavior when '{param_name}' is set. "
+                                f"Detected external sink after {max_hops} hops."
+                            + (" Response body contains redirect-bypass signals." if bypass else "")
+                        ),
+                            "evidence": (
+                                f"Payload: ?{param_name}={payload}\n"
+                                f"Chain:\n{evidence_chain}\n"
+                                f"Final body snippet: {final['response_excerpt'][:500]}"
+                            ),
+                            "remediation": (
+                                "Validate redirect parameters with strict allowlists, reject scheme-relative and javascript: URLs, "
+                                "sanitize encoded separators, and enforce safe redirect destinations per flow."
+                            ),
+                            "external_redirect": external_redirect_hit,
+                            "redirect_chain": chain,
+                            "redirect_hops": max_hops,
+                            "normalized_redirect_target": normalized_final,
+                            "redirect_chain_normalized": normalized_chain,
+                            "bypass_signals": _dedupe_preserve_order(chain_signals),
+                        })
+                        if mode != "hacker":
+                            return findings
+                    elif chain_signals:
+                        # Deep inspection for client-side sink signals even without Location.
+                        evidence_chain = "\n".join(
+                            [
+                                f"hop {step['hop']}: {step['status']} -> {step['url']} "
+                                f"Location={step['location']} normalized={step['normalized_location']} "
+                                f"sigs={','.join(step['body_signatures'])}"
+                                for step in chain
+                            ]
+                        )
+                        findings.append({
+                            "path": urlparse(url).path,
+                            "param": param_name,
+                            "title": f"Open Redirect Sink Signal ({param_name} parameter)",
+                            "severity": "MEDIUM",
+                            "detail": (
+                                "A client-side redirect sink signal was observed without an immediate external "
+                                "HTTP Location, indicating a likely follow-up redirect path."
+                            ),
+                            "evidence": (
+                                f"Payload: ?{param_name}={payload}\n"
+                                f"Signals: {', '.join(sorted(set(chain_signals)))}\n"
+                                f"Chain:\n{evidence_chain}"
+                            ),
+                            "remediation": (
+                                "Avoid writing user input into client-side redirect sinks (meta refresh / window.location)."
+                            ),
+                            "external_redirect": False,
+                            "redirect_chain": chain,
+                            "redirect_hops": max_hops,
+                            "normalized_redirect_target": normalized_chain[-1] if normalized_chain else "",
+                            "redirect_chain_normalized": normalized_chain,
+                            "bypass_signals": _dedupe_preserve_order(chain_signals),
+                        })
+                else:
+                    resp = safe_request(session, "GET", url, params={param_name: payload},
+                                        allow_redirects=False)
+                    if resp is None:
+                        continue
+                    location = resp.headers.get("Location", "")
+                    if "evil.com" in location:
+                        log.finding("MEDIUM", f"Open redirect via {param_name}@{urlparse(url).path}")
+                        findings.append({
+                            "title": f"Open Redirect ({param_name} parameter)",
+                            "severity": "MEDIUM",
+                            "path": urlparse(url).path,
+                            "param": param_name,
+                            "detail": f"The server redirects to an attacker-controlled URL when '{param_name}' is set.",
+                            "evidence": f"Payload: ?{param_name}={payload}\nLocation: {location}",
+                            "remediation": "Validate redirect targets against a whitelist of allowed domains. Use relative paths for internal redirects.",
+                        })
+                        if mode != "hacker":
+                            return findings
 
     if not findings:
         log.ok("No open redirect vulnerabilities detected")
@@ -1717,23 +2623,23 @@ def test_host_header_injection(session, target):
     return findings
 
 
-def run_injection_tests(session, target, api_routes, found_paths, baseline_hash):
+def run_injection_tests(session, target, api_routes, found_paths, baseline_hash, mode="standard"):
     """Orchestrate all injection testing."""
     log.banner("Phase 3A: Injection Testing")
     all_findings = []
 
     # Extract injectable parameters first
-    injectable_params = _extract_injectable_params(session, target, api_routes, baseline_hash)
+    injectable_params = _extract_injectable_params(session, target, api_routes, baseline_hash, mode=mode)
 
     # Run injection tests in parallel groups
     test_funcs = [
-        ("SQLi", lambda: test_sqli(session, target, injectable_params)),
-        ("XSS", lambda: test_reflected_xss(session, target, injectable_params)),
-        ("CMDI", lambda: test_command_injection(session, target, injectable_params)),
-        ("LFI", lambda: test_path_traversal(session, target, injectable_params)),
-        ("SSTI", lambda: test_ssti(session, target, injectable_params)),
-        ("SSRF", lambda: test_ssrf(session, target, injectable_params)),
-        ("CRLF", lambda: test_crlf_injection(session, target, injectable_params)),
+        ("SQLi", lambda: test_sqli(session, target, injectable_params, mode=mode)),
+        ("XSS", lambda: test_reflected_xss(session, target, injectable_params, mode=mode)),
+        ("CMDI", lambda: test_command_injection(session, target, injectable_params, mode=mode)),
+        ("LFI", lambda: test_path_traversal(session, target, injectable_params, mode=mode)),
+        ("SSTI", lambda: test_ssti(session, target, injectable_params, mode=mode)),
+        ("SSRF", lambda: test_ssrf(session, target, injectable_params, mode=mode)),
+        ("CRLF", lambda: test_crlf_injection(session, target, injectable_params, mode=mode)),
     ]
 
     with ThreadPoolExecutor(max_workers=3) as executor:
@@ -1743,7 +2649,8 @@ def run_injection_tests(session, target, api_routes, found_paths, baseline_hash)
             all_findings.extend(result)
 
     # These don't use injectable_params — run separately
-    all_findings.extend(test_open_redirect(session, target, api_routes, found_paths))
+    all_findings.extend(test_open_redirect(session, target, api_routes, found_paths,
+                                          mode=mode))
     all_findings.extend(test_host_header_injection(session, target))
 
     return all_findings
@@ -2559,7 +3466,7 @@ class AuditPDF(FPDF):
 
 
 def generate_report(target, all_findings, tech_info, accessible_endpoints,
-                    writable_endpoints, extraction_stats, output_path):
+                    writable_endpoints, extraction_stats, output_path, risk_profile):
     """Generate the PDF security assessment report."""
     log.section("Generating PDF Report")
 
@@ -2580,6 +3487,8 @@ def generate_report(target, all_findings, tech_info, accessible_endpoints,
     # Table of contents / summary
     pdf.add_page()
     pdf.h1("1. Executive Summary")
+    scan_mode = (risk_profile.get("mode") or "standard").upper()
+    pdf.body(f"Scan mode: {scan_mode}")
     pdf.body(
         f"A security assessment was conducted against {target} on "
         f"{datetime.now().strftime('%B %d, %Y')}. The assessment identified "
@@ -2635,6 +3544,9 @@ def generate_report(target, all_findings, tech_info, accessible_endpoints,
         pdf.h2(f"2.{i + 1} {f['title']}")
         pdf.severity_tag(f["severity"])
         pdf.body(f["detail"])
+        score = f.get("exploitability_score", 0)
+        pdf.bold("Exploitability Score:")
+        pdf.body(str(score))
         if f.get("evidence"):
             pdf.bold("Evidence:")
             pdf.ln(1)
@@ -2645,9 +3557,26 @@ def generate_report(target, all_findings, tech_info, accessible_endpoints,
         if f.get("remediation"):
             pdf.bold("Remediation:")
             pdf.body(f["remediation"])
+        graph = f.get("attack_chain_graph", {})
+        if isinstance(graph, dict) and graph.get("nodes"):
+            pdf.bold("Attack Chain Graph:")
+            for idx, node in enumerate(graph.get("nodes", []), 1):
+                pdf.bullet(f"{idx}. {node}")
 
     # Data exposure section
     if accessible_endpoints:
+        if risk_profile.get("mode") == "hacker":
+            pdf.add_page()
+            pdf.h1("3a. Hacker Prioritization (Exploitability)")
+            ranked = sorted(
+                all_findings,
+                key=lambda x: x.get("exploitability_score", 0),
+                reverse=True,
+            )
+            for item in ranked[:20]:
+                score = item.get("exploitability_score", 0)
+                pdf.bullet(f"[{score}] {item.get('title', 'Unknown')} ({item.get('severity', 'INFO')})")
+
         pdf.add_page()
         pdf.h1("3. Data Exposure Summary")
         total_records = sum(e.get("record_count", 0) or 0 for e in accessible_endpoints)
@@ -2685,9 +3614,38 @@ def generate_report(target, all_findings, tech_info, accessible_endpoints,
             pdf.cell(30, 6, str(es["records"]), border=1, fill=True, align="C")
             pdf.cell(80, 6, es["route"][:45], border=1, fill=True, new_x="LMARGIN", new_y="NEXT")
 
+    section_num = 5 if extraction_stats else 4
+
+    # Hacker-mode deep-dive section
+    if risk_profile.get("mode") == "hacker":
+        section_num += 1
+        pdf.add_page()
+        pdf.h1(f"{section_num}. Hacker Attack Surface (Open Redirect and Chain Abuse)")
+
+        attack_surface = risk_profile.get("hacker_attack_surface", {})
+        if attack_surface:
+            pdf.h2("Open-Redirect Attack Surface")
+            pdf.bullet(f"Open redirect findings: {attack_surface.get('open_redirect_findings', 0)}")
+            pdf.bullet(f"External redirect sink findings: {attack_surface.get('external_redirect_findings', 0)}")
+            pdf.bullet(f"Multi-hop redirect findings: {attack_surface.get('multi_hop_redirect_findings', 0)}")
+            pdf.bullet(f"Bypass indicators detected: {attack_surface.get('bypass_indicator_findings', 0)}")
+            pdf.bullet(f"Maximum redirect hops observed: {attack_surface.get('max_redirect_hops_seen', 0)}")
+
+        roadmap = risk_profile.get("hacker_fix_roadmap", [])
+        if roadmap:
+            pdf.h2("Hacker-Mode Remediation Roadmap")
+            for item in roadmap:
+                goal = item.get("goal", "Remediation goal")
+                steps = item.get("steps", [])
+                pdf.h2(goal)
+                if not steps:
+                    pdf.bullet("No explicit steps recorded for this objective.")
+                else:
+                    for step in steps:
+                        pdf.bullet(step)
+
     # Remediation
     pdf.add_page()
-    section_num = 5 if extraction_stats else 4
     pdf.h1(f"{section_num}. Remediation Recommendations")
 
     remediation = [
@@ -2719,6 +3677,21 @@ def generate_report(target, all_findings, tech_info, accessible_endpoints,
         for item in items:
             pdf.bullet(item)
 
+    # Risk scoring summary
+    section_num += 1
+    pdf.add_page()
+    pdf.h1(f"{section_num}. Executive Risk Scoring")
+    pdf.body(
+        f"Overall risk score: {risk_profile['overall_risk_score']}/100 "
+        f"({risk_profile['risk_level']})."
+    )
+    for sev, count in risk_profile["finding_counts"].items():
+        pdf.bullet(f"{sev}: {count}")
+    if risk_profile.get("remediation_order"):
+        pdf.h2("Prioritized Remediation Sequence")
+        for item in risk_profile["remediation_order"]:
+            pdf.bullet(item)
+
     # Footer
     pdf.add_page()
     pdf.h1(f"{section_num + 1}. Disclaimer")
@@ -2739,7 +3712,9 @@ def generate_report(target, all_findings, tech_info, accessible_endpoints,
 # ---------------------------------------------------------------------------
 
 def run_audit(target, extract=False, output_dir=None, auth=None,
-              skip_injection=False, skip_subdomains=False, skip_dns=False):
+              skip_injection=False, skip_subdomains=False, skip_dns=False,
+              emit_json=True, emit_pdf=True, emit_csv=False, emit_html=False,
+              mode="standard", proxies=None, trust_env_proxies=True):
     """Run the complete security audit pipeline.
 
     auth: optional dict with keys bearer_token, cookie, api_key, api_key_header
@@ -2760,6 +3735,7 @@ def run_audit(target, extract=False, output_dir=None, auth=None,
     log.banner(f"Security Audit: {target}")
     log.info(f"Output directory: {output_dir}")
     log.info(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log.info(f"Scan mode: {mode}")
 
     auth = auth or {}
     session = make_session(
@@ -2768,6 +3744,8 @@ def run_audit(target, extract=False, output_dir=None, auth=None,
         cookie=auth.get("cookie"),
         api_key=auth.get("api_key"),
         api_key_header=auth.get("api_key_header", "X-API-Key"),
+        proxies=proxies,
+        trust_env_proxies=trust_env_proxies,
     )
     if auth:
         log.info(f"Auth credentials provided: {', '.join(auth.keys())}")
@@ -2783,7 +3761,7 @@ def run_audit(target, extract=False, output_dir=None, auth=None,
     header_findings, resp_headers = recon_headers(session, target)
     all_findings.extend(header_findings)
 
-    tls_findings = recon_tls(target)
+    tls_findings = recon_tls(session, target)
     all_findings.extend(tls_findings)
 
     cors_findings = recon_cors(session, target)
@@ -2798,11 +3776,13 @@ def run_audit(target, extract=False, output_dir=None, auth=None,
 
     # ── Phase 2: Endpoint Discovery ──────────────────────────────────────
     log.banner("Phase 2: Endpoint Discovery")
-    path_findings = discover_paths(session, target, baseline_hash)
-    api_routes, external_urls, tech_info, js_urls = discover_js_endpoints(session, target)
+    path_findings = discover_paths(session, target, baseline_hash, mode=mode)
+    api_routes, external_urls, tech_info, js_urls = discover_js_endpoints(
+        session, target, mode=mode
+    )
 
     # Parse OpenAPI/Swagger specs for additional routes
-    spec_routes = parse_openapi_spec(session, target, path_findings)
+    spec_routes = parse_openapi_spec(session, target, path_findings, mode=mode)
     api_routes = list(set(api_routes + spec_routes))
 
     # Parse robots.txt / sitemap.xml for additional paths
@@ -2834,7 +3814,7 @@ def run_audit(target, extract=False, output_dir=None, auth=None,
     # ── Phase 3A: Injection Testing ──────────────────────────────────────
     if not skip_injection:
         injection_findings = run_injection_tests(
-            session, target, api_routes, path_findings, baseline_hash)
+            session, target, api_routes, path_findings, baseline_hash, mode=mode)
         all_findings.extend(injection_findings)
 
     # ── Phase 3B: API Security Testing ───────────────────────────────────
@@ -2893,41 +3873,75 @@ def run_audit(target, extract=False, output_dir=None, auth=None,
     log.banner("Phase 6: Report Generation")
 
     # Sort findings by severity
-    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
-    all_findings.sort(key=lambda f: severity_order.get(f["severity"], 99))
+    # Enrich findings with normalized metadata before ranking/dedupe
+    for finding in all_findings:
+        _finding_metadata_for_finding(finding)
+        finding["exploitability_score"] = _derive_exploitability_score(finding)
+        finding["attack_chain_graph"] = _build_attack_chain_graph(finding)
 
-    # Deduplicate findings by title
+    severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "INFO": 4}
+    all_findings.sort(key=lambda f: (
+        severity_order.get(f["severity"], 99),
+        -int(f.get("exploitability_score", 0)),
+    ))
+
+    # Deduplicate findings with mode-aware fingerprinting.
     seen = set()
     unique_findings = []
     for f in all_findings:
-        if f["title"] not in seen:
-            seen.add(f["title"])
+        if mode == "hacker":
+            dedupe_key = _build_finding_dedupe_key(f)
+        else:
+            dedupe_key = (f["title"],)
+
+        if dedupe_key not in seen:
+            seen.add(dedupe_key)
             unique_findings.append(f)
     all_findings = unique_findings
 
-    report_path = os.path.join(output_dir, f"security_report_{domain}.pdf")
-    generate_report(target, all_findings, tech_info, accessible_eps,
-                    writable_eps, extraction_stats, report_path)
+    risk_profile = build_risk_profile(
+        all_findings,
+        accessible_eps,
+        writable_eps,
+        extraction_stats,
+        mode=mode,
+    )
 
-    # Save raw findings as JSON too
+    if emit_pdf:
+        report_path = os.path.join(output_dir, f"security_report_{domain}.pdf")
+        generate_report(target, all_findings, tech_info, accessible_eps,
+                       writable_eps, extraction_stats, report_path, risk_profile)
+        log.info(f"Report: {report_path}")
+
     json_path = os.path.join(output_dir, f"findings_{domain}.json")
-    with open(json_path, "w") as f:
-        # Remove non-serializable data
-        serializable = []
-        for finding in all_findings:
-            sf = {k: v for k, v in finding.items()
-                  if k not in ("endpoints", "writable")}
-            serializable.append(sf)
-        json.dump({
-            "target": target,
-            "date": datetime.now().isoformat(),
-            "finding_count": len(all_findings),
-            "findings": serializable,
-            "tech_info": tech_info,
-            "accessible_endpoints": accessible_eps,
-            "writable_endpoints": writable_eps,
-        }, f, indent=2, default=str)
-    log.info(f"Raw findings JSON: {json_path}")
+    if emit_json:
+        with open(json_path, "w") as f:
+            # Remove non-serializable data
+            serializable = []
+            for finding in all_findings:
+                sf = {k: v for k, v in finding.items()
+                      if k not in ("endpoints", "writable")}
+                serializable.append(sf)
+            json.dump({
+                "target": target,
+                "date": datetime.now().isoformat(),
+                "finding_count": len(all_findings),
+                "risk_profile": risk_profile,
+                "findings": serializable,
+                "tech_info": tech_info,
+                "accessible_endpoints": accessible_eps,
+                "writable_endpoints": writable_eps,
+            }, f, indent=2, default=str)
+        log.info(f"Raw findings JSON: {json_path}")
+
+    if emit_csv:
+        csv_path = export_findings_csv(output_dir, all_findings)
+        if csv_path:
+            log.info(f"CSV findings: {csv_path}")
+
+    if emit_html:
+        html_path = export_html_report(output_dir, target, all_findings, risk_profile, extraction_stats)
+        log.info(f"HTML report: {html_path}")
 
     # Summary
     log.banner("Audit Complete")
@@ -2940,13 +3954,30 @@ def run_audit(target, extract=False, output_dir=None, auth=None,
         if counts.get(sev, 0) > 0:
             log.finding(sev, f"{counts[sev]} findings")
 
+    if mode == "hacker":
+        priority = sorted(
+            all_findings,
+            key=lambda f: int(f.get("exploitability_score", 0)),
+            reverse=True,
+        )
+        if priority:
+            log.section("Top Exploitability Priority (Hacker Mode)")
+            for item in priority[:10]:
+                log.finding(
+                    item.get("severity", "INFO"),
+                    f"[{item.get('exploitability_score', 0):>3}] {item.get('title', 'Unknown')}"
+                )
+
     log.info(f"API endpoints tested: {len(api_routes)}")
     log.info(f"Accessible without auth: {len(accessible_eps)}")
     log.info(f"Writable without auth: {len(writable_eps)}")
     if extraction_stats:
         total_extracted = sum(e["records"] for e in extraction_stats)
         log.info(f"Records extracted: {total_extracted}")
-    log.info(f"Report: {report_path}")
+    if emit_pdf:
+        log.info(f"Report: {report_path}")
+    else:
+        log.warn("PDF report generation disabled (--no-pdf)")
     log.info(f"Output: {output_dir}")
 
     return all_findings
@@ -2961,10 +3992,11 @@ def main():
         description="Web Application Security Audit Tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Examples:
+  Examples:
   python3 audit.py https://example.com                           # Scan only
   python3 audit.py https://example.com --extract                 # Scan + extract data
   python3 audit.py https://example.com -o /tmp/report            # Custom output dir
+  python3 audit.py https://example.com --mode hacker             # Deep hacker-mode audit
   python3 audit.py https://example.com --bearer-token <TOKEN>    # Authenticated scan
   python3 audit.py https://example.com --cookie "session=abc"    # Cookie-based auth
   python3 audit.py https://example.com --api-key KEY --api-key-header X-Auth-Token
@@ -2979,6 +4011,14 @@ Examples:
                         help="Request timeout in seconds (default: 15)")
     parser.add_argument("--delay", "-d", type=float, default=0.3,
                         help="Delay between requests in seconds (default: 0.3)")
+    parser.add_argument("--emit-csv", action="store_true",
+                        help="Also export findings as CSV")
+    parser.add_argument("--emit-html", action="store_true",
+                        help="Also export a lightweight HTML report")
+    parser.add_argument("--no-json", action="store_true",
+                        help="Skip JSON findings export")
+    parser.add_argument("--no-pdf", action="store_true",
+                        help="Skip PDF report generation")
     # Auth flags
     parser.add_argument("--bearer-token", default=None,
                         help="Bearer token for Authorization header (e.g. a JWT)")
@@ -2995,6 +4035,16 @@ Examples:
                         help="Skip subdomain enumeration")
     parser.add_argument("--skip-dns", action="store_true",
                         help="Skip DNS security checks (SPF, DMARC, zone transfer)")
+    parser.add_argument("--mode", choices=["standard", "hacker"], default="standard",
+                        help="Scan depth mode: standard (fast) or hacker (deep/maximum coverage)")
+    parser.add_argument("--proxy", default=os.getenv("WEB_AUDIT_PROXY"),
+                        help="HTTP/HTTPS proxy for all scan traffic (e.g. http://127.0.0.1:8080, socks5://127.0.0.1:1080)")
+    parser.add_argument("--proxy-username", default=None,
+                        help="Username for authenticated proxy")
+    parser.add_argument("--proxy-password", default=None,
+                        help="Password for authenticated proxy")
+    parser.add_argument("--no-system-proxy", action="store_true",
+                        help="Ignore proxy variables from system environment")
 
     args = parser.parse_args()
 
@@ -3011,6 +4061,18 @@ Examples:
         auth["api_key"] = args.api_key
         auth["api_key_header"] = args.api_key_header
 
+    proxies = _build_proxy_config(
+        args.proxy,
+        proxy_username=args.proxy_username,
+        proxy_password=args.proxy_password,
+    )
+    if args.proxy:
+        p = urlparse(args.proxy)
+        proxy_host = p.hostname or "proxy"
+        if p.port:
+            proxy_host = f"{proxy_host}:{p.port}"
+        log.info(f"Proxy configured: {p.scheme}://{proxy_host}")
+
     try:
         run_audit(
             args.target,
@@ -3020,6 +4082,13 @@ Examples:
             skip_injection=args.skip_injection,
             skip_subdomains=args.skip_subdomains,
             skip_dns=args.skip_dns,
+            emit_json=not args.no_json,
+            emit_pdf=not args.no_pdf,
+            emit_csv=args.emit_csv,
+            emit_html=args.emit_html,
+            mode=args.mode,
+            proxies=proxies,
+            trust_env_proxies=not args.no_system_proxy,
         )
     except KeyboardInterrupt:
         print("\n\nAudit interrupted by user.")

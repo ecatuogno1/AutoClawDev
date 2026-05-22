@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useHealthMatrix, useAllExperiments, useActiveRuns } from "@/lib/api";
-import { ExperimentRow } from "@/components/ExperimentRow";
+import { useHealthMatrix, useActiveRuns, useRuns, useSystemHealth } from "@/lib/api";
+import { HistoryRow } from "@/components/HistoryRow";
+import { RecoveryQueue } from "@/components/RecoveryQueue";
 
 export const Route = createFileRoute("/")({
   component: CommandCenter,
@@ -29,10 +30,14 @@ function rateColor(rate: number) {
 
 function CommandCenter() {
   const { data: health, isLoading: healthLoading } = useHealthMatrix();
-  const { data: experiments, isLoading: expLoading } = useAllExperiments();
+  const { data: runsData, isLoading: runsLoading } = useRuns();
   const { data: activeRuns } = useActiveRuns();
+  const { data: systemHealth } = useSystemHealth();
 
   const activeCount = activeRuns ? Object.keys(activeRuns).length : 0;
+  const recoveryRuns = (runsData?.runs ?? []).filter(
+    (run) => run.recovery?.required === true && (run.recovery.status ?? "open") === "open",
+  );
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -43,16 +48,40 @@ function CommandCenter() {
           <p className="text-sm text-[#8b949e] mt-1">
             Cross-project health and activity
           </p>
+          {systemHealth && (
+            <p className="text-xs text-[#6e7681] mt-2">
+              {systemHealth.registeredProjects} projects · {systemHealth.authMode} auth · {systemHealth.serverBuilt && systemHealth.webBuilt ? "artifacts ready" : "artifacts incomplete"}
+            </p>
+          )}
         </div>
-        {activeCount > 0 && (
-          <div className="flex items-center gap-2 bg-[#3fb95010] border border-[#3fb95040] rounded-lg px-4 py-2">
-            <span className="w-2.5 h-2.5 rounded-full bg-[#3fb950] animate-pulse" />
-            <span className="text-sm text-[#3fb950] font-medium">
-              {activeCount} active
-            </span>
+        {(activeCount > 0 || recoveryRuns.length > 0) && (
+          <div className="flex items-center gap-2">
+            {activeCount > 0 && (
+              <div className="flex items-center gap-2 bg-[#3fb95010] border border-[#3fb95040] rounded-lg px-4 py-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#3fb950] animate-pulse" />
+                <span className="text-sm text-[#3fb950] font-medium">
+                  {activeCount} active
+                </span>
+              </div>
+            )}
+            {recoveryRuns.length > 0 && (
+              <div className="flex items-center gap-2 bg-[#f8514910] border border-[#f8514940] rounded-lg px-4 py-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-[#f85149]" />
+                <span className="text-sm text-[#f85149] font-medium">
+                  {recoveryRuns.length} recovery
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>
+
+      <RecoveryQueue
+        runs={recoveryRuns.slice(0, 8)}
+        showProject
+        title="Recovery Queue"
+        emptyLabel="No recovery-required runs across the portfolio"
+      />
 
       {/* Health Matrix */}
       <div>
@@ -136,7 +165,7 @@ function CommandCenter() {
                     </td>
                     <td className="p-3 text-center">
                       <span className="text-xs text-[#8b949e] mono">
-                        {p.totalExperiments}
+                        {p.totalRuns}
                       </span>
                     </td>
                     <td className="p-3 text-center">
@@ -197,17 +226,17 @@ function CommandCenter() {
         <h2 className="text-lg font-semibold text-[#e6edf3] mb-4">
           Recent Activity
         </h2>
-        {expLoading ? (
+        {runsLoading ? (
           <div className="bg-[#161b22] border border-[#30363d] rounded-lg animate-pulse h-48" />
-        ) : experiments && experiments.length > 0 ? (
+        ) : runsData?.runs && runsData.runs.length > 0 ? (
           <div className="bg-[#161b22] border border-[#30363d] rounded-lg overflow-hidden">
-            {experiments.slice(0, 10).map((exp) => (
-              <ExperimentRow key={exp.id} experiment={exp} showProject />
+            {runsData.runs.slice(0, 10).map((run) => (
+              <HistoryRow key={run.id} run={run} showProject />
             ))}
           </div>
         ) : (
           <div className="bg-[#161b22] border border-[#30363d] rounded-lg p-8 text-center">
-            <p className="text-[#8b949e]">No experiments yet</p>
+            <p className="text-[#8b949e]">No run history yet</p>
           </div>
         )}
       </div>

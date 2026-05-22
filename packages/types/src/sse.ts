@@ -11,12 +11,14 @@ export type RunOutputKind =
 export type RunOutputStatus = "working" | "done" | "fail";
 
 export interface ActiveRun {
+  runId?: string;
   project: string;
   cycles: number;
   startedAt: string;
 }
 
 export interface RunOutputEvent {
+  runId?: string;
   project: string;
   text: string;
   timestamp: string;
@@ -30,6 +32,7 @@ export interface RunOutputEvent {
 export type SSEEventType = "output" | "start" | "stop" | "done" | "connected";
 
 export interface SSEEventData {
+  runId?: string;
   project?: string;
   text?: string;
   timestamp: string;

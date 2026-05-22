@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type { ChatProvider } from "@autoclawdev/types";
+import type { ChatModel, ChatProvider } from "@autoclawdev/types";
 
 export interface ConversationEntry {
   role: "user" | "assistant" | "system";
@@ -11,6 +11,7 @@ export interface ConversationEntry {
 export interface StoredChatSession {
   id: string;
   provider: ChatProvider;
+  model: ChatModel;
   cwd: string;
   createdAt: string;
   lastMessageAt: string;
@@ -23,6 +24,7 @@ export interface StoredChatSession {
 export interface ChatSessionSummary {
   id: string;
   provider: ChatProvider;
+  model: ChatModel;
   cwd: string;
   createdAt: string;
   lastMessageAt: string;

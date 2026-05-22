@@ -9,6 +9,7 @@ interface FileTreeProps {
   expandedDirs: Set<string>;
   onSelectFile: (path: string) => void;
   onToggleDir: (path: string) => void;
+  showHeader?: boolean;
 }
 
 export function FileTree(props: FileTreeProps) {
@@ -41,9 +42,11 @@ export function FileTree(props: FileTreeProps) {
 
   return (
     <div className="px-2 py-3">
-      <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[#6e7681]">
-        Project Files
-      </div>
+      {props.showHeader !== false ? (
+        <div className="mb-2 px-2 text-[11px] font-medium uppercase tracking-[0.18em] text-[#6e7681]">
+          Project Files
+        </div>
+      ) : null}
       <TreeLevel
         depth={0}
         entries={data.entries}

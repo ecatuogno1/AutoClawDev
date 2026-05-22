@@ -11,7 +11,7 @@ function formatDuration(startedAt: string) {
 }
 
 export function LivePanel({
-  projectKey,
+  projectKey: _projectKey,
 }: {
   projectKey: string | null;
 }) {
@@ -22,16 +22,14 @@ export function LivePanel({
     return Object.fromEntries((projects ?? []).map((project) => [project.key, project.name]));
   }, [projects]);
 
-  const runs = Object.values(activeRuns ?? {}).filter((run) =>
-    projectKey ? run.project === projectKey : true,
-  );
+  const runs = Object.values(activeRuns ?? {});
 
   return (
     <div className="flex h-full flex-col p-4">
       <div className="rounded-xl border border-[#30363d] bg-[#0d1117] p-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-medium uppercase tracking-[0.18em] text-[#6e7681]">
-            {projectKey ? "Project Run" : "Active Runs"}
+            Active Runs
           </span>
           <span className="text-xs text-[#8b949e]">{runs.length} running</span>
         </div>
@@ -70,11 +68,10 @@ export function LivePanel({
       </div>
 
       <Link
-        to={projectKey ? "/projects/$projectKey" : "/live"}
-        params={projectKey ? { projectKey } : undefined}
+        to="/live"
         className="mt-4 rounded-lg border border-[#30363d] bg-[#0d1117] px-3 py-2 text-center text-sm text-[#8b949e] transition-colors hover:text-[#e6edf3]"
       >
-        {projectKey ? "Open project workspace" : "Open live console"}
+        Open live console
       </Link>
     </div>
   );

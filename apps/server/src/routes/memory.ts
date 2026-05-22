@@ -1,9 +1,9 @@
 import { Router, type Router as ExpressRouter } from "express";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { MemoryFinding, ProjectMemory } from "@autoclawdev/types";
-import { getWorkspacePath, resolveMemoryDir } from "../lib/paths.js";
-import { getProject } from "../lib/config.js";
+import { resolveMemoryDir } from "../lib/paths.js";
+import { getProject, listProjects } from "../lib/config.js";
 
 const router: ExpressRouter = Router();
 
@@ -96,9 +96,7 @@ router.get("/:key/memory", async (req, res) => {
 
 // GET /api/memory/overview — cross-project memory summary
 router.get("/overview", async (_req, res) => {
-  const memBase = getWorkspacePath("memory");
   try {
-    const dirs = await readdir(memBase);
     const summary: Array<{
       project: string;
       findingsCount: number;
@@ -106,19 +104,21 @@ router.get("/overview", async (_req, res) => {
       hasProjectMemory: boolean;
     }> = [];
 
-    for (const dir of dirs) {
+    const projects = await listProjects();
+    for (const project of projects) {
+      const memoryDir = resolveMemoryDir(project.key, project.path);
       const projMem = await safeReadFile(
-        join(memBase, dir, "project-memory.json"),
+        join(memoryDir, "project-memory.json"),
       );
       const findings = await safeReadJsonl(
-        join(memBase, dir, "finding-memory.jsonl"),
+        join(memoryDir, "finding-memory.jsonl"),
       );
       const fileMem = await safeReadJsonl(
-        join(memBase, dir, "file-memory.jsonl"),
+        join(memoryDir, "file-memory.jsonl"),
       );
 
       summary.push({
-        project: dir,
+        project: project.key,
         findingsCount: findings.length,
         fileMemoryCount: fileMem.length,
         hasProjectMemory: !!projMem,

@@ -2,10 +2,8 @@ import type { LucideIcon } from "lucide-react";
 import {
   FlaskConicalIcon,
   FolderTreeIcon,
-  GitBranchIcon,
   LayoutGridIcon,
   PanelsTopLeftIcon,
-  SearchIcon,
   SettingsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
@@ -15,10 +13,7 @@ export type ActivityPanelId =
   | "projects"
   | "experiments"
   | "live"
-  | "files"
-  | "search"
-  | "git"
-  | "terminal";
+  | "files";
 
 export interface ActivityPanelItem {
   id: ActivityPanelId;
@@ -46,8 +41,8 @@ const GLOBAL_ACTIVITY_PANEL_ITEMS: ActivityPanelItem[] = [
   {
     id: "experiments",
     icon: FlaskConicalIcon,
-    label: "Experiments",
-    description: "Recent experiments across every project.",
+    label: "History",
+    description: "Recent run history across every project.",
     to: "/experiments",
   },
   {
@@ -65,27 +60,6 @@ const PROJECT_ACTIVITY_PANEL_ITEMS: ActivityPanelItem[] = [
     icon: FolderTreeIcon,
     label: "Files",
     description: "Browse the active project's file tree.",
-    to: "/projects",
-  },
-  {
-    id: "search",
-    icon: SearchIcon,
-    label: "Search",
-    description: "Jump into the active project's review and knowledge views.",
-    to: "/projects",
-  },
-  {
-    id: "git",
-    icon: GitBranchIcon,
-    label: "Source Control",
-    description: "Git status and changed files for the active project.",
-    to: "/projects",
-  },
-  {
-    id: "terminal",
-    icon: SquareTerminalIcon,
-    label: "Terminal",
-    description: "Terminal session rooted in the active project.",
     to: "/projects",
   },
 ];

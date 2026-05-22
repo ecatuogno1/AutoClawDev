@@ -1,4 +1,4 @@
-import type { ChatProvider } from "@/components/chat/types";
+import type { ChatModel, ChatProvider } from "@autoclawdev/types";
 export type { ChatProvider };
 
 export interface RecentChatEntry {
@@ -11,12 +11,15 @@ export interface RecentChatEntry {
 
 export interface StoredChatSessionPointer {
   provider: ChatProvider;
+  model: ChatModel;
   sessionId: string;
 }
 
 const CHAT_HISTORY_KEY = "autoclaw:chat-history";
 const CHAT_PROVIDER_KEY = "autoclaw:chat-provider";
+const CHAT_MODEL_SELECTIONS_KEY = "autoclaw:chat-model-selections";
 const CHAT_SESSION_KEY = "autoclaw:chat-session";
+const COMPOSER_SESSION_KEY_PREFIX = "autoclaw:composer-session:";
 export const CHAT_HISTORY_EVENT = "autoclaw:chat-history-updated";
 const MAX_CHAT_HISTORY = 12;
 
@@ -77,18 +80,54 @@ export function setStoredChatProvider(provider: ChatProvider) {
   window.dispatchEvent(new CustomEvent(CHAT_HISTORY_EVENT));
 }
 
-export function getStoredChatSession(): StoredChatSessionPointer | null {
-  if (!canUseStorage()) return null;
+export function getStoredChatModelSelections(): Record<ChatProvider, ChatModel> {
+  if (!canUseStorage()) {
+    return { claude: "opus", codex: "gpt-5.4" };
+  }
 
   try {
-    const raw = window.localStorage.getItem(CHAT_SESSION_KEY);
-    if (!raw) return null;
+    const raw = window.localStorage.getItem(CHAT_MODEL_SELECTIONS_KEY);
+    if (!raw) {
+      return { claude: "opus", codex: "gpt-5.4" };
+    }
 
+    const parsed = JSON.parse(raw) as Partial<Record<ChatProvider, unknown>>;
+    return {
+      claude: typeof parsed.claude === "string" && parsed.claude.length > 0 ? parsed.claude : "opus",
+      codex:
+        typeof parsed.codex === "string" && parsed.codex.length > 0 ? parsed.codex : "gpt-5.4",
+    };
+  } catch {
+    return { claude: "opus", codex: "gpt-5.4" };
+  }
+}
+
+export function setStoredChatModelSelection(provider: ChatProvider, model: ChatModel) {
+  if (!canUseStorage()) return;
+
+  const next = {
+    ...getStoredChatModelSelections(),
+    [provider]: model,
+  };
+
+  window.localStorage.setItem(CHAT_MODEL_SELECTIONS_KEY, JSON.stringify(next));
+  window.dispatchEvent(new CustomEvent(CHAT_HISTORY_EVENT));
+}
+
+function getSessionStorageKey(scopeKey?: string | null) {
+  return scopeKey ? `${COMPOSER_SESSION_KEY_PREFIX}${scopeKey}` : CHAT_SESSION_KEY;
+}
+
+function parseStoredChatSession(raw: string | null): StoredChatSessionPointer | null {
+  if (!raw) return null;
+
+  try {
     const parsed = JSON.parse(raw) as StoredChatSessionPointer;
     if (
       !parsed ||
       typeof parsed !== "object" ||
       typeof parsed.sessionId !== "string" ||
+      typeof parsed.model !== "string" ||
       (parsed.provider !== "claude" && parsed.provider !== "codex")
     ) {
       return null;
@@ -100,16 +139,36 @@ export function getStoredChatSession(): StoredChatSessionPointer | null {
   }
 }
 
-export function setStoredChatSession(session: StoredChatSessionPointer) {
+export function getStoredChatSession(scopeKey?: string | null): StoredChatSessionPointer | null {
+  if (!canUseStorage()) return null;
+
+  const scopedSession = parseStoredChatSession(
+    window.localStorage.getItem(getSessionStorageKey(scopeKey)),
+  );
+  if (scopedSession) {
+    return scopedSession;
+  }
+
+  if (scopeKey) {
+    return parseStoredChatSession(window.localStorage.getItem(CHAT_SESSION_KEY));
+  }
+
+  return null;
+}
+
+export function setStoredChatSession(
+  session: StoredChatSessionPointer,
+  scopeKey?: string | null,
+) {
   if (!canUseStorage()) return;
 
-  window.localStorage.setItem(CHAT_SESSION_KEY, JSON.stringify(session));
+  window.localStorage.setItem(getSessionStorageKey(scopeKey), JSON.stringify(session));
   window.dispatchEvent(new CustomEvent(CHAT_HISTORY_EVENT));
 }
 
-export function clearStoredChatSession() {
+export function clearStoredChatSession(scopeKey?: string | null) {
   if (!canUseStorage()) return;
 
-  window.localStorage.removeItem(CHAT_SESSION_KEY);
+  window.localStorage.removeItem(getSessionStorageKey(scopeKey));
   window.dispatchEvent(new CustomEvent(CHAT_HISTORY_EVENT));
 }

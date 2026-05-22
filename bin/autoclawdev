@@ -73,6 +73,9 @@ MAX_CYCLES=50
 VERSION="$(tr -d '[:space:]' < "$VERSION_FILE" 2>/dev/null || echo "0.1.0-dev")"
 DASHBOARD_PORT="${PORT:-4100}"
 DASHBOARD_URL="http://localhost:${DASHBOARD_PORT}"
+CONTROL_PLANE_CLI="$REPO_ROOT/apps/server/dist/cli/run-plan.js"
+CONTROL_PLANE_PORTFOLIO_CLI="$REPO_ROOT/apps/server/dist/cli/portfolio.js"
+CONTROL_PLANE_HISTORY_CLI="$REPO_ROOT/apps/server/dist/cli/history.js"
 
 # ── Gum Styling ──────────────────────────────────────────────────────
 export GUM_CHOOSE_CURSOR_FOREGROUND="117"
@@ -115,72 +118,37 @@ project_exists() {
   [ -f "$PROJECTS_DIR/$1.json" ]
 }
 
+run_normalization_cli() {
+  local kind=$1
+  shift
+  if [ ! -f "$REPO_ROOT/apps/server/dist/cli/normalizeConfigValue.js" ]; then
+    if [ "${AUTOCLAWDEV_NORMALIZATION_BOOTSTRAPPED:-0}" != "1" ]; then
+      pnpm --filter @autoclawdev/types build >/dev/null
+      pnpm --filter @autoclawdev/server build >/dev/null
+      export AUTOCLAWDEV_NORMALIZATION_BOOTSTRAPPED=1
+    fi
+  fi
+  node "$REPO_ROOT/apps/server/dist/cli/normalizeConfigValue.js" --kind "$kind" "$@"
+}
+
 normalize_team_profile() {
-  local raw=${1:-reliability}
-  raw=$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr ' _' '--')
-  case "$raw" in
-    reliability|security|performance|test-hardening|frontend-quality|dependency-hygiene|api-contract|data-integrity|privacy-compliance|mobile-quality|refactor-safety|issue-burner)
-      printf "%s" "$raw"
-      ;;
-    tests|test|testing) printf "test-hardening" ;;
-    frontend|ui) printf "frontend-quality" ;;
-    dependency|dependencies|deps) printf "dependency-hygiene" ;;
-    contract|api) printf "api-contract" ;;
-    data) printf "data-integrity" ;;
-    privacy|compliance) printf "privacy-compliance" ;;
-    mobile) printf "mobile-quality" ;;
-    refactor) printf "refactor-safety" ;;
-    issues|issue) printf "issue-burner" ;;
-    *) return 1 ;;
-  esac
+  run_normalization_cli team --value "${1:-reliability}" --strict
 }
 
 team_profile_exists() {
-  normalize_team_profile "$1" >/dev/null 2>&1
+  run_normalization_cli team --value "${1:-}" --strict >/dev/null 2>&1
 }
 
 list_team_profiles() {
-  cat <<'EOF'
-reliability
-security
-performance
-test-hardening
-frontend-quality
-dependency-hygiene
-api-contract
-data-integrity
-privacy-compliance
-mobile-quality
-refactor-safety
-issue-burner
-EOF
+  run_normalization_cli team --list
 }
 
 normalize_workflow_type() {
-  local raw=${1:-standard}
-  raw=$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr ' _' '--')
-  case "$raw" in
-    standard|implement-only|review-only|fast-ship|batch-research|research-only)
-      printf "%s" "$raw"
-      ;;
-    impl|implement|implementation) printf "implement-only" ;;
-    review|review-pass) printf "review-only" ;;
-    fast|fastship|ship) printf "fast-ship" ;;
-    batch|multi-research|batch-impl) printf "batch-research" ;;
-    research|findings|audit) printf "research-only" ;;
-    *) return 1 ;;
-  esac
+  run_normalization_cli workflow --value "${1:-standard}" --strict
 }
 
 list_workflow_types() {
-  cat <<'EOF'
-standard
-implement-only
-review-only
-fast-ship
-batch-research
-research-only
-EOF
+  run_normalization_cli workflow --list
 }
 
 prepare_project_env() {
@@ -277,6 +245,12 @@ prepare_project_env() {
     [ -n "$_du" ] && export AUTOCLAWDEV_DEV_URL="$_du"
   fi
 
+  # Preferred audit target URL
+  if [ -z "${AUTOCLAWDEV_AUDIT_URL:-}" ]; then
+    local _au; _au="$(get_project_field "$project_key" "audit_url")"
+    [ -n "$_au" ] && export AUTOCLAWDEV_AUDIT_URL="$_au"
+  fi
+
   # Landing repo
   if [ -z "${AUTOCLAWDEV_LANDING_REPO:-}" ]; then
     local _lr; _lr="$(get_project_field "$project_key" "landing_repo")"
@@ -323,7 +297,7 @@ run_runner_once() {
     rc=$?
   else
     "$RUNNER" "$cycles" "$run_mode" "$project_key" \
-      > >(tee "$project_log" "$global_log") 2>&1
+      > >(tee -a "$project_log" "$global_log") 2>&1
     rc=$?
   fi
 
@@ -333,6 +307,45 @@ run_runner_once() {
   fi
 
   return "$rc"
+}
+
+run_control_plane_plan() {
+  local mode=$1
+  local project_key=$2
+  local cycles=${3:-1}
+  local output_format=${4:-text}
+  local enforce=${5:-no}
+
+  if [ ! -f "$CONTROL_PLANE_CLI" ]; then
+    gum style --foreground 203 "Control-plane CLI missing: $CONTROL_PLANE_CLI"
+    gum style --foreground 242 "Run make build first."
+    return 1
+  fi
+
+  local args=(node "$CONTROL_PLANE_CLI" --project "$project_key" --mode "$mode" --cycles "$cycles")
+  [ "$output_format" = "json" ] && args+=(--json)
+  [ "$enforce" = "yes" ] && args+=(--enforce)
+  "${args[@]}"
+}
+
+run_portfolio_cli() {
+  if [ ! -f "$CONTROL_PLANE_PORTFOLIO_CLI" ]; then
+    gum style --foreground 203 "Portfolio CLI missing: $CONTROL_PLANE_PORTFOLIO_CLI"
+    gum style --foreground 242 "Run make build first."
+    return 1
+  fi
+
+  node "$CONTROL_PLANE_PORTFOLIO_CLI" "$@"
+}
+
+run_history_cli() {
+  if [ ! -f "$CONTROL_PLANE_HISTORY_CLI" ]; then
+    gum style --foreground 203 "History CLI missing: $CONTROL_PLANE_HISTORY_CLI"
+    gum style --foreground 242 "Run make build first."
+    return 1
+  fi
+
+  node "$CONTROL_PLANE_HISTORY_CLI" "$@"
 }
 
 stream_experiments() {
@@ -587,11 +600,16 @@ print_last_lines() {
 
 show_run_failure_context() {
   local project_key=$1
-  local project_log="$WORKSPACE/run-${project_key}.log"
-  local global_log="$WORKSPACE/run.log"
-  local log_file="$project_log"
+  local repo_path
+  repo_path=$(get_project_field "$project_key" "path" 2>/dev/null)
+  local log_file=""
 
-  [ -f "$log_file" ] || log_file="$global_log"
+  if [ -n "$repo_path" ]; then
+    log_file=$(ls -t "$repo_path"/.autoclaw/runs/*/console.log 2>/dev/null | head -1)
+  fi
+  [ -n "$log_file" ] || log_file="$WORKSPACE/run-${project_key}.log"
+  [ -f "$log_file" ] || log_file="$WORKSPACE/run.log"
+
   if [ ! -f "$log_file" ]; then
     gum style --foreground 203 "  No run log found for $project_key."
     return 0
@@ -603,28 +621,46 @@ show_run_failure_context() {
 
 get_exp_stats() {
   local key=$1
-  local expfile="$WORKSPACE/experiments-${key}.jsonl"
-  if [ -f "$expfile" ] && [ -s "$expfile" ]; then
-    local stats
-    stats=$(stream_experiments "$expfile" | python3 -c "
-import json, sys
+  local repo_path
+  repo_path=$(get_project_field "$key" "path" 2>/dev/null)
+  local runs_dir="${repo_path}/.autoclaw/runs"
+  if [ -d "$runs_dir" ]; then
+    python3 - "$runs_dir" <<'PY' 2>/dev/null
+import json
+import sys
+from pathlib import Path
+
+runs_dir = Path(sys.argv[1])
 total = 0
 passed = 0
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
+failed = 0
+degraded = 0
+recovery = 0
+for run_json in runs_dir.glob("*/run.json"):
+    try:
+        row = json.loads(run_json.read_text(encoding="utf-8"))
+    except Exception:
         continue
-    exp = json.loads(line)
+    outcome = row.get("outcome")
+    status = row.get("status")
+    if outcome is None and status not in {"completed", "failed", "preflight_failed", "stopped"}:
+        continue
     total += 1
-    if exp.get('result') == 'pass':
+    if outcome == "clean_pass" or (outcome is None and status == "completed"):
         passed += 1
-failed = total - passed
+    elif outcome == "degraded_pass":
+        passed += 1
+        degraded += 1
+    elif outcome == "recovery_required":
+        failed += 1
+        recovery += 1
+    else:
+        failed += 1
 rate = int((passed * 100 / total) if total else 0)
-print(f'{total} {passed} {failed} {rate}')
-" 2>/dev/null)
-    echo "${stats:-0 0 0 0}"
+print(f"{total} {passed} {failed} {rate} {degraded} {recovery}")
+PY
   else
-    echo "0 0 0 0"
+    echo "0 0 0 0 0 0"
   fi
 }
 
@@ -649,7 +685,7 @@ cmd_dashboard() {
   for key in "${projects[@]}"; do
     local name=$(get_project_name "$key")
     local desc=$(get_project_field "$key" "description")
-    read total passed failed rate <<< $(get_exp_stats "$key")
+    read total passed failed rate degraded recovery <<< $(get_exp_stats "$key")
     local running=$(is_running "$key")
     local status_icon="○"
     [ "$running" = "yes" ] && status_icon="$(gum style --foreground 114 '●')"
@@ -663,8 +699,8 @@ cmd_dashboard() {
       bar="░░░░░░░░░░░░░░░░░░░░"
     fi
 
-    lines+=("$(printf "%s %-18s %-30s %3d exp  ✓%-3d ✗%-3d %3d%% %s" \
-      "$status_icon" "$name" "${desc:0:30}" "$total" "$passed" "$failed" "$rate" "$bar")")
+    lines+=("$(printf "%s %-18s %-30s %3d runs  ✓%-3d ~%-3d ✗%-3d %3d%% %s" \
+      "$status_icon" "$name" "${desc:0:30}" "$total" "$passed" "$degraded" "$failed" "$rate" "$bar")")
   done
 
   echo ""
@@ -677,23 +713,44 @@ cmd_dashboard() {
 
   echo ""
 
-  # Recent experiments
-  local all_exps=""
+  # Recent run history
+  local all_runs=""
   for key in "${projects[@]}"; do
-    local expfile="$WORKSPACE/experiments-${key}.jsonl"
-    [ -f "$expfile" ] && all_exps="$all_exps$(stream_experiments "$expfile" | tail -3 | while read l; do echo "$key|$l"; done)
-"
+    local repo_path
+    repo_path=$(get_project_field "$key" "path" 2>/dev/null)
+    local runs_dir="${repo_path}/.autoclaw/runs"
+    [ -d "$runs_dir" ] || continue
+    all_runs="$all_runs$(python3 - "$key" "$runs_dir" <<'PY' 2>/dev/null
+import json
+import sys
+from pathlib import Path
+
+key = sys.argv[1]
+runs_dir = Path(sys.argv[2])
+rows = []
+for run_json in runs_dir.glob("*/run.json"):
+    try:
+        rows.append(json.loads(run_json.read_text(encoding="utf-8")))
+    except Exception:
+        continue
+rows.sort(key=lambda row: row.get("createdAt", ""), reverse=True)
+for row in rows[:3]:
+    print(f"{key}|{json.dumps(row)}")
+PY
+)"
   done
 
-  if [ -n "$all_exps" ]; then
-    gum style --foreground 242 --bold "  RECENT EXPERIMENTS"
+  if [ -n "$all_runs" ]; then
+    gum style --foreground 242 --bold "  RECENT HISTORY"
     echo ""
-    echo "$all_exps" | sort -t'|' -k2 -r | head -8 | while IFS='|' read key data; do
-      local result=$(echo "$data" | python3 -c "import json,sys;print(json.loads(sys.stdin.read().strip()).get('result','?'))" 2>/dev/null)
-      local desc=$(echo "$data" | python3 -c "import json,sys;print(json.loads(sys.stdin.read().strip()).get('description','?')[:50])" 2>/dev/null)
-      local ts=$(echo "$data" | python3 -c "import json,sys;print(json.loads(sys.stdin.read().strip()).get('timestamp','?')[:16])" 2>/dev/null)
+    echo "$all_runs" | sort -t'|' -k2 -r | head -8 | while IFS='|' read key data; do
+      local status=$(echo "$data" | python3 -c "import json,sys;row=json.loads(sys.stdin.read().strip());print(row.get('outcome') or row.get('status') or '?')" 2>/dev/null)
+      local desc=$(echo "$data" | python3 -c "import json,sys;row=json.loads(sys.stdin.read().strip());print((row.get('summary') or row.get('mode') or '?')[:50])" 2>/dev/null)
+      local ts=$(echo "$data" | python3 -c "import json,sys;row=json.loads(sys.stdin.read().strip());print((row.get('createdAt') or '?')[:16])" 2>/dev/null)
       local icon="$(gum style --foreground 203 '✗')"
-      [ "$result" = "pass" ] && icon="$(gum style --foreground 114 '✓')"
+      [ "$status" = "clean_pass" ] && icon="$(gum style --foreground 114 '✓')"
+      [ "$status" = "degraded_pass" ] && icon="$(gum style --foreground 221 '~')"
+      [ "$status" = "recovery_required" ] && icon="$(gum style --foreground 203 '!')"
       printf "  %s  %-12s %-16s %s\n" "$icon" "$key" "$ts" "$desc"
     done
   fi
@@ -1992,8 +2049,8 @@ cmd_projects_interactive() {
     local choices=()
     for key in "${projects[@]}"; do
       local name=$(get_project_name "$key")
-      read total passed failed rate <<< $(get_exp_stats "$key")
-      choices+=("$(printf '%-15s %-18s %3d exp  %3d%% pass' "$key" "$name" "$total" "$rate")")
+      read total passed failed rate degraded recovery <<< $(get_exp_stats "$key")
+      choices+=("$(printf '%-15s %-18s %3d runs  %3d%% pass  ~%d  !%d' "$key" "$name" "$total" "$rate" "$degraded" "$recovery")")
     done
     choices+=("← Back")
 
@@ -2018,7 +2075,7 @@ cmd_project_detail() {
   local test_cmd=$(get_project_field "$key" "test_cmd")
   local lint_cmd=$(get_project_field "$key" "lint_cmd")
   local gh_repo=$(get_project_field "$key" "gh_repo")
-  read total passed failed rate <<< $(get_exp_stats "$key")
+  read total passed failed rate degraded recovery <<< $(get_exp_stats "$key")
   local running=$(is_running "$key")
 
   gum style --border rounded --border-foreground 215 --padding "0 2" \
@@ -2771,6 +2828,7 @@ cmd_full_cycle() {
 
   preflight_check_dirty "$project_key" || return 1
   prepare_project_env "$project_key" || return 1
+  run_control_plane_plan "run" "$project_key" "$passes" "text" "yes" || return 1
 
   local total=$((passes * ${#FULL_CYCLE_PROFILES[@]}))
   local current=0
@@ -2932,6 +2990,17 @@ cmd_run() {
   run_runner_once "$project_key" "$cycles" "$run_mode" "truncate"
 }
 
+cmd_run_dry_run() {
+  local project_key=$1
+  local cycles=${2:-1}
+  local output_format=${3:-text}
+  [ -n "$project_key" ] || {
+    gum style --foreground 203 "Usage: autoclaw run <project> [cycles] --dry-run [--json]"
+    return 1
+  }
+  run_control_plane_plan "run" "$project_key" "$cycles" "$output_format" "no"
+}
+
 cmd_security() {
   cmd_profile_run "security" "$1" "${2:-5}"
 }
@@ -2950,6 +3019,7 @@ cmd_profile_run() {
     return 1
   fi
 
+  run_control_plane_plan "run" "$project_key" "$cycles" "text" "yes" || return 1
   AUTOCLAWDEV_TEAM_PROFILE="$profile" run_runner_once "$project_key" "$cycles" "" "truncate"
 }
 
@@ -3177,6 +3247,7 @@ cmd_workflow_run() {
     return 1
   fi
 
+  run_control_plane_plan "run" "$project_key" "$cycles" "text" "yes" || return 1
   AUTOCLAWDEV_WORKFLOW_TYPE="$wf" run_runner_once "$project_key" "$cycles" "" "truncate"
 }
 
@@ -3223,12 +3294,12 @@ cmd_list() {
   echo ""
   for key in $(get_projects); do
     local name=$(get_project_name "$key")
-    read total passed failed rate <<< $(get_exp_stats "$key")
+    read total passed failed rate degraded recovery <<< $(get_exp_stats "$key")
     local running=$(is_running "$key")
     local status="○"
     [ "$running" = "yes" ] && status="●"
-    printf "  %s $(gum style --foreground 215 '%-15s') %-18s %3d exp  $(gum style --foreground 114 "✓%-3d") $(gum style --foreground 203 "✗%-3d") %3d%%\n" \
-      "$status" "$key" "$name" "$total" "$passed" "$failed" "$rate"
+    printf "  %s $(gum style --foreground 215 '%-15s') %-18s %3d runs  $(gum style --foreground 114 "✓%-3d") $(gum style --foreground 221 "~%-3d") $(gum style --foreground 203 "✗%-3d") %3d%%\n" \
+      "$status" "$key" "$name" "$total" "$passed" "$degraded" "$failed" "$rate"
   done
   echo ""
 }
@@ -3241,19 +3312,20 @@ cmd_log() {
     header
     echo ""
     for k in $(get_projects); do
-      local expfile="$WORKSPACE/experiments-${k}.jsonl"
-      [ -f "$expfile" ] && [ -s "$expfile" ] || continue
-      read total passed _ _ <<< $(get_exp_stats "$k")
-      printf "  $(gum style --foreground 215 '%-15s') %d experiments, %d passed\n" "$k" "$total" "$passed"
+      read total passed failed rate degraded recovery <<< $(get_exp_stats "$k")
+      [ "$total" -gt 0 ] || continue
+      printf "  $(gum style --foreground 215 '%-15s') %d runs, %d clean/degraded pass, %d failed, %d recovery\n" "$k" "$total" "$passed" "$failed" "$recovery"
     done
     echo ""
     gum style --foreground 238 "  Usage: autoclawdev log <project>"
     return
   fi
 
-  local expfile="$WORKSPACE/experiments-${key}.jsonl"
-  if [ ! -f "$expfile" ] || [ ! -s "$expfile" ]; then
-    echo "  No experiments for $key."
+  local repo_path
+  repo_path=$(get_project_field "$key" "path" 2>/dev/null)
+  local runs_dir="${repo_path}/.autoclaw/runs"
+  if [ ! -d "$runs_dir" ]; then
+    echo "  No run history for $key."
     return
   fi
 
@@ -3261,32 +3333,52 @@ cmd_log() {
   gum style --foreground 117 --bold "  $key"
   echo ""
 
-  stream_experiments "$expfile" | python3 -c "
-import json, sys
-rows = []
-for line in sys.stdin:
-    line = line.strip()
-    if not line:
-        continue
-    rows.append(json.loads(line))
+  python3 - "$runs_dir" <<'PY' 2>/dev/null
+import json
+import sys
+from datetime import datetime
+from pathlib import Path
 
-rows.sort(key=lambda exp: exp.get('timestamp', ''), reverse=True)
-for e in rows:
-    result = e.get('result', '?')
-    icon = '✓' if result == 'pass' else '✗'
-    color = '\033[38;5;114m' if result == 'pass' else '\033[38;5;203m'
-    rst = '\033[0m'
-    elapsed = e.get('elapsed', 0)
-    em = f'{elapsed//60}m {elapsed%60}s' if elapsed > 60 else f'{elapsed}s'
-    commit = e.get('commit', '')[:7]
-    desc = (e.get('description') or '?')[:50]
-    domain = e.get('domain', '')
-    issue = e.get('gh_issue', '')
-    issue_str = f' #{issue}' if issue else ''
-    print(f'  {color}{icon}{rst}  {e.get(\"id\",\"?\"):8}  {em:>6}  {commit:7}  {domain:8}{issue_str}')
-    print(f'     {desc}')
+runs_dir = Path(sys.argv[1])
+rows = []
+for run_json in runs_dir.glob("*/run.json"):
+    try:
+        rows.append(json.loads(run_json.read_text(encoding="utf-8")))
+    except Exception:
+        continue
+
+rows.sort(key=lambda row: row.get("createdAt", ""), reverse=True)
+for row in rows[:50]:
+    status = row.get("outcome") or row.get("status") or "unknown"
+    if status == "clean_pass":
+        icon, color = "✓", "\033[38;5;114m"
+    elif status == "degraded_pass":
+        icon, color = "~", "\033[38;5;221m"
+    elif status == "recovery_required":
+        icon, color = "!", "\033[38;5;203m"
+    else:
+        icon, color = "✗", "\033[38;5;203m"
+    rst = "\033[0m"
+    started = row.get("createdAt")
+    updated = row.get("updatedAt") or started
+    elapsed = 0
+    try:
+        if started and updated:
+            elapsed = int((datetime.fromisoformat(updated.replace("Z", "+00:00")) - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds())
+    except Exception:
+        elapsed = 0
+    em = f"{elapsed//60}m {elapsed%60}s" if elapsed > 60 else f"{elapsed}s"
+    source = row.get("source", "native")
+    desc = (row.get("summary") or row.get("mode") or "?")[:60]
+    print(f"  {color}{icon}{rst}  {row.get('id','?')[:24]:24}  {em:>6}  {source:12}  {status:18}")
+    print(f"     {desc}")
+    if row.get("overrideReason"):
+        print(f"     override: {row['overrideReason']}")
+    if row.get("recovery", {}).get("required"):
+        branch = row.get("recovery", {}).get("branch", "?")
+        print(f"     recovery: {branch}")
     print()
-" 2>/dev/null
+PY
 }
 
 # ── Add Project ──────────────────────────────────────────────────────
@@ -3391,11 +3483,11 @@ cmd_status() {
 
   for key in $(get_projects); do
     local name=$(get_project_name "$key")
-    read total passed failed rate <<< $(get_exp_stats "$key")
+    read total passed failed rate degraded recovery <<< $(get_exp_stats "$key")
     local running=$(is_running "$key")
     local status="$(gum style --foreground 242 '○ idle')"
     [ "$running" = "yes" ] && status="$(gum style --foreground 114 '● running')"
-    printf "  $(gum style --foreground 215 '%-15s') %-18s %s  %d exp, %d%% pass\n" "$key" "$name" "$status" "$total" "$rate"
+    printf "  $(gum style --foreground 215 '%-15s') %-18s %s  %d runs, %d%% pass, ~%d degraded, !%d recovery\n" "$key" "$name" "$status" "$total" "$rate" "$degraded" "$recovery"
   done
   echo ""
 }
@@ -3491,6 +3583,9 @@ cmd_doctor() {
 }
 
 cmd_build_cli() {
+  local project_key="${1:-}"
+  [ -n "$project_key" ] && run_control_plane_plan "build" "$project_key" "1" "text" "yes" || return 1
+
   local capture_log=""
   capture_log=$(mktemp /tmp/autoclaw-build-XXXXXX.log)
 
@@ -3527,6 +3622,9 @@ PY
 }
 
 cmd_review_cli() {
+  local project_key="${1:-}"
+  [ -n "$project_key" ] && run_control_plane_plan "review" "$project_key" "1" "text" "yes" || return 1
+
   local capture_log=""
   capture_log=$(mktemp /tmp/autoclaw-review-XXXXXX.log)
 
@@ -3584,44 +3682,182 @@ cmd_version() {
 
 # ── Web Audit ────────────────────────────────────────────────────────
 cmd_audit() {
-  local target="${1:-}"
-  local extract_flag="${2:-}"
-  if [ -z "$target" ]; then
+  local action="${1:-}"
+  if [ -z "$action" ]; then
     gum style --foreground 203 "Usage: autoclawdev audit <url> [--extract]"
-    gum style --foreground 242 "  Runs an external black-box security assessment against a web application."
-    gum style --foreground 242 "  --extract    Also extract all accessible data to CSV (breach scope assessment)"
+    gum style --foreground 242 "  autoclawdev audit <url> [--project <key>] [--mode <standard|deep|hacker>] [--owned-target]"
+    gum style --foreground 242 "  autoclawdev audit run <url> [--project <key>] [--mode <standard|deep|hacker>] [--owned-target]"
+    gum style --foreground 242 "  autoclawdev audit run <url> --hacker-mode [--project <key>]"
+    gum style --foreground 242 "  autoclawdev audit resume <run-root>"
+    gum style --foreground 242 "  autoclawdev audit approve <run-root> <gate>"
+    gum style --foreground 242 "  autoclawdev audit export <run-root>"
+    gum style --foreground 242 "  autoclawdev audit operator <run-root> -- <cmd...>"
     return 1
   fi
   local script_dir
   script_dir="$(resolve_source "${BASH_SOURCE[0]}")/../scripts"
-  local output_dir
+  local engine="$script_dir/web_audit_v2.py"
+
+  case "$action" in
+    run)
+      shift
+      ;;
+    resume)
+      shift
+      python3 "$engine" resume "$@"
+      return $?
+      ;;
+    approve)
+      shift
+      python3 "$engine" approve "$@"
+      return $?
+      ;;
+    export)
+      shift
+      python3 "$engine" export "$@"
+      return $?
+      ;;
+    operator)
+      shift
+      python3 "$engine" operator "$@"
+      return $?
+      ;;
+    *)
+      set -- "$action" "$@"
+      action="run"
+      ;;
+  esac
+
+  local target="${1:-}"
+  if [ -z "$target" ]; then
+    gum style --foreground 203 "Usage: autoclawdev audit run <url> [--project <key>]"
+    return 1
+  fi
+  shift
+
+  local extra_args=()
+  local output_provided=0
+  local audit_mode="standard"
+  local project_key=""
+  local output_dir=""
+  local owned_target_flag=0
+  local hacker_mode_flag=0
+  local authorization_note_flag=0
+  local arg=""
+  local next_arg=""
   local domain
   domain=$(printf "%s" "$target" | sed -E 's|https?://||;s|/.*||;s|:.*||')
   local timestamp
   timestamp=$(date +%Y%m%d_%H%M%S)
-  output_dir="$HOME/Desktop/audit_${domain}_${timestamp}"
 
-  gum style --foreground 117 --bold "  Web Security Audit: $target"
-  echo ""
+  while [ $# -gt 0 ]; do
+    arg="$1"
+    case "$arg" in
+      --project)
+        shift
+        project_key="${1:-}"
+        ;;
+      --project=*)
+        project_key="${arg#--project=}"
+        ;;
+      --output|-o)
+        output_provided=1
+        extra_args+=("$arg")
+        shift
+        output_dir="${1:-}"
+        extra_args+=("$output_dir")
+        ;;
+      --output=*)
+        output_provided=1
+        output_dir="${arg#--output=}"
+        extra_args+=("$arg")
+        ;;
+      --mode)
+        extra_args+=("$arg")
+        shift
+        audit_mode="${1:-standard}"
+        extra_args+=("$audit_mode")
+        ;;
+      --mode=*)
+        audit_mode="${arg#--mode=}"
+        extra_args+=("$arg")
+        ;;
+      --authorization-note)
+        authorization_note_flag=1
+        extra_args+=("$arg")
+        shift
+        next_arg="${1:-}"
+        extra_args+=("$next_arg")
+        ;;
+      --authorization-note=*)
+        authorization_note_flag=1
+        extra_args+=("$arg")
+        ;;
+      --hacker-mode)
+        hacker_mode_flag=1
+        audit_mode="hacker"
+        ;;
+      --owned-target)
+        owned_target_flag=1
+        extra_args+=("$arg")
+        ;;
+      *)
+        extra_args+=("$arg")
+        ;;
+    esac
+    shift || true
+  done
 
-  local extra_args=""
-  if [ "$extract_flag" = "--extract" ] || [ "$extract_flag" = "-e" ]; then
-    extra_args="--extract"
-    gum style --foreground 215 "  Mode: Full scan + data extraction"
-  else
-    gum style --foreground 215 "  Mode: Scan only (use --extract to pull data)"
+  if [ "$hacker_mode_flag" -eq 1 ]; then
+    audit_mode="hacker"
+    if [ "$owned_target_flag" -eq 0 ]; then
+      extra_args+=(--owned-target)
+      owned_target_flag=1
+    fi
+    if [ "$authorization_note_flag" -eq 0 ]; then
+      extra_args+=(--authorization-note "CLI hacker-mode alias (approval-gated owned-target run)")
+    fi
+  fi
+
+  if [ -n "$project_key" ]; then
+    if ! project_exists "$project_key"; then
+      gum style --foreground 203 "Project not found: $project_key"
+      return 1
+    fi
+    local project_path
+    project_path="$(get_project_field "$project_key" "path")"
+    if [ "$output_provided" -eq 0 ]; then
+      output_dir="$project_path/.autoclaw/web-audits/wa-${domain}-${timestamp}"
+      extra_args+=(--output "$output_dir")
+    fi
+    extra_args+=(--project-key "$project_key")
+  elif [ "$output_provided" -eq 0 ]; then
+    output_dir="$HOME/Desktop/web_audit_${domain}_${timestamp}"
+    extra_args+=(--output "$output_dir")
+  fi
+
+  gum style --foreground 117 --bold "  Structured Web Audit: $target"
+  gum style --foreground 215 "  Audit depth: ${audit_mode:-standard}"
+  if [ "$hacker_mode_flag" -eq 1 ]; then
+    gum style --foreground 215 "  Mode alias: hacker-mode (maps to approval-gated owned-target deep audit)"
+  fi
+  if [ -n "$project_key" ]; then
+    gum style --foreground 215 "  Project: $project_key"
   fi
   gum style --foreground 242 "  Output: $output_dir"
   echo ""
 
-  python3 "$script_dir/web_audit.py" "$target" --output "$output_dir" $extra_args
+  python3 "$engine" run "$target" "${extra_args[@]}"
 
-  local report_path
-  report_path=$(find "$output_dir" -name "security_report_*.pdf" 2>/dev/null | head -1)
-  if [ -n "$report_path" ]; then
+  local markdown_report="$output_dir/report.md"
+  local html_report="$output_dir/report.html"
+  local json_report="$output_dir/export.json"
+  if [ -f "$json_report" ]; then
     echo ""
-    gum style --foreground 82 --bold "  Report: $report_path"
-    gum style --foreground 82 "  Findings: $output_dir/findings_${domain}.json"
+    gum style --foreground 82 --bold "  Artifacts: $output_dir"
+    [ -f "$markdown_report" ] && gum style --foreground 82 "  Markdown: $markdown_report"
+    [ -f "$html_report" ] && gum style --foreground 82 "  HTML: $html_report"
+    gum style --foreground 82 "  JSON: $json_report"
   fi
 }
 
@@ -3647,13 +3883,18 @@ cmd_help() {
   printf "  $(gum style --foreground $c 'autoclaw create') $(gum style --foreground $p '<name> [--init]')                   Scaffold a new project from template\n"
   printf "  $(gum style --foreground $c 'autoclaw init') $(gum style --foreground $p '<name> [path]')                      Register existing project with AutoClawDev\n"
   printf "  $(gum style --foreground $c 'autoclaw add') $(gum style --foreground $p '<path>')                                Add a project (legacy)\n"
-  printf "  $(gum style --foreground $c 'autoclaw log') $(gum style --foreground $p '[project]')                             Experiment history\n"
-  printf "  $(gum style --foreground $c 'autoclaw status')                                       Active runs + stats\n"
+  printf "  $(gum style --foreground $c 'autoclaw log') $(gum style --foreground $p '[project]')                             Recent typed run logs\n"
+  printf "  $(gum style --foreground $c 'autoclaw status')                                       Active runs + history stats\n"
+  printf "  $(gum style --foreground $c 'autoclaw portfolio audit')                              Audit all 7 manifests\n"
+  printf "  $(gum style --foreground $c 'autoclaw portfolio sync') $(gum style --foreground $p '[--dry-run]')                Sync compatibility configs\n"
+  printf "  $(gum style --foreground $c 'autoclaw history audit')                                Audit imported/native history\n"
+  printf "  $(gum style --foreground $c 'autoclaw history import') $(gum style --foreground $p '[--dry-run]')               Import legacy run history\n"
   printf "  $(gum style --foreground $c 'autoclaw github') $(gum style --foreground $p '<project>')                          GitHub issues\n"
   echo ""
   gum style --foreground "$d" --bold "  TOOLS"
   echo ""
   printf "  $(gum style --foreground $c 'autoclaw audit') $(gum style --foreground $p '<url>')                               Web security audit\n"
+  printf "  $(gum style --foreground $c 'autoclaw audit') $(gum style --foreground $p '<url> --hacker-mode')                Deep owned-target audit alias (still approval-gated)\n"
   printf "  $(gum style --foreground $c 'autoclaw ingest') $(gum style --foreground $p '<project> [deep-review|qa|profile]') Feed findings into memory\n"
   printf "  $(gum style --foreground $c 'autoclaw memory') $(gum style --foreground $p '<project>')                          Initialize/refresh project memory\n"
   printf "  $(gum style --foreground $c 'autoclaw ui')                                           Web dashboard\n"
@@ -3688,11 +3929,34 @@ _parse_profile_flag() {
   done
 }
 
+_has_flag() {
+  local needle=$1
+  shift
+  local arg=""
+  for arg in "$@"; do
+    [ "$arg" = "$needle" ] && return 0
+  done
+  return 1
+}
+
 # ── Route ────────────────────────────────────────────────────────────
 case "${1:-}" in
   # ── Core commands ──────────────────────────────────────────────────
   run)
     shift
+    if _has_flag "--dry-run" "$@"; then
+      output_format="text"
+      _has_flag "--json" "$@" && output_format="json"
+      filtered=()
+      arg=""
+      for arg in "$@"; do
+        [ "$arg" = "--dry-run" ] && continue
+        [ "$arg" = "--json" ] && continue
+        filtered+=("$arg")
+      done
+      cmd_run_dry_run "${filtered[0]:-}" "${filtered[1]:-1}" "$output_format"
+      exit $?
+    fi
     _parse_profile_flag "$@"
     if [ -n "$PARSED_PROFILE" ]; then
       # Single profile mode: autoclaw run project N -p security
@@ -3726,10 +3990,32 @@ case "${1:-}" in
   add)       cmd_add "${2:-}" ;;
   log)       cmd_log "${2:-}" ;;
   status|st) cmd_status ;;
+  portfolio)
+    shift
+    case "${1:-audit}" in
+      audit) run_portfolio_cli audit "${@:2}" ;;
+      sync) run_portfolio_cli sync "${@:2}" ;;
+      *)
+        gum style --foreground 203 "Usage: autoclaw portfolio <audit|sync> [--dry-run] [--json]"
+        exit 1
+        ;;
+    esac
+    ;;
+  history)
+    shift
+    case "${1:-audit}" in
+      audit) run_history_cli audit "${@:2}" ;;
+      import) run_history_cli import "${@:2}" ;;
+      *)
+        gum style --foreground 203 "Usage: autoclaw history <audit|import> [--project <key>] [--dry-run] [--json]"
+        exit 1
+        ;;
+    esac
+    ;;
   github|gh) cmd_github "${2:-}"; echo "" ;;
 
   # ── Tools ──────────────────────────────────────────────────────────
-  audit)     cmd_audit "${2:-}" "${3:-}" ;;
+  audit)     shift; cmd_audit "${1:-}" "${@:2}" ;;
   ingest|ingest-memory) "$REPO_ROOT/scripts/ingest-to-memory.sh" "${@:2}" ;;
   migrate) "$REPO_ROOT/scripts/migrate-to-autoclaw.sh" "${@:2}" ;;
   memory|memory-init|mem-init) cmd_memory_init "${2:-}" ;;

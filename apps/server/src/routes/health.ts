@@ -1,9 +1,12 @@
 import { Router, type Router as ExpressRouter } from "express";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { ProjectHealth } from "@autoclawdev/types";
+import type { ProjectHealth, RunRecord } from "@autoclawdev/types";
 import { listProjects } from "../lib/config.js";
-import { getExperiments } from "../lib/experiments.js";
+import {
+  buildProjectStatsFromRuns,
+  listProjectHistory,
+} from "../lib/history.js";
 import { getWorkspacePath, resolveReviewsDir, resolveMemoryDir, resolveLockPath } from "../lib/paths.js";
 
 const router: ExpressRouter = Router();
@@ -17,17 +20,17 @@ async function fileExists(path: string): Promise<boolean> {
   }
 }
 
-function computeTrend(
-  experiments: Array<{ result: string }>,
-): ProjectHealth["recentTrend"] {
-  if (experiments.length < 4) return "unknown";
-  const recent = experiments.slice(0, 5);
-  const older = experiments.slice(5, 10);
+function isPassingRun(run: RunRecord): boolean {
+  return run.outcome === "clean_pass" || run.outcome === "degraded_pass";
+}
+
+function computeTrend(runs: RunRecord[]): ProjectHealth["recentTrend"] {
+  if (runs.length < 4) return "unknown";
+  const recent = runs.slice(0, 5);
+  const older = runs.slice(5, 10);
   if (older.length === 0) return "unknown";
-  const recentRate =
-    recent.filter((e) => e.result === "pass").length / recent.length;
-  const olderRate =
-    older.filter((e) => e.result === "pass").length / older.length;
+  const recentRate = recent.filter((run) => isPassingRun(run)).length / recent.length;
+  const olderRate = older.filter((run) => isPassingRun(run)).length / older.length;
   if (recentRate > olderRate + 0.1) return "improving";
   if (recentRate < olderRate - 0.1) return "declining";
   return "stable";
@@ -41,10 +44,8 @@ router.get("/", async (_req, res) => {
   const health: ProjectHealth[] = [];
 
   for (const project of projects) {
-    const experiments = await getExperiments(project.key);
-    const passed = experiments.filter((e) => e.result === "pass").length;
-    const total = experiments.length;
-    const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
+    const runs = await listProjectHistory(project.key, 500);
+    const stats = buildProjectStatsFromRuns(runs, { project: project.key });
 
     // Check for deep review logs
     const reviewDir = resolveReviewsDir(project.path);
@@ -88,10 +89,13 @@ router.get("/", async (_req, res) => {
     health.push({
       key: project.key,
       name: project.name,
-      passRate,
-      totalExperiments: total,
-      recentTrend: computeTrend(experiments),
-      lastRun: experiments[0]?.timestamp,
+      passRate: stats.passRate,
+      totalRuns: stats.total,
+      cleanPassed: stats.cleanPassed,
+      degradedPassed: stats.degradedPassed,
+      recoveryRequired: stats.recoveryRequired,
+      recentTrend: computeTrend(runs),
+      lastRun: runs[0]?.createdAt,
       lastDeepReview,
       hasMemory,
       profiles,

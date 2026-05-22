@@ -6,6 +6,7 @@
     "dev:web": "pnpm --filter @autoclawdev/web dev",
     "dev:server": "pnpm --filter @autoclawdev/server dev",
     "build": "pnpm --filter @autoclawdev/types build && pnpm --filter @autoclawdev/web build && pnpm --filter @autoclawdev/server build",
-    "start": "pnpm --filter @autoclawdev/server start"
+    "start": "pnpm --filter @autoclawdev/server start",
+    "test:browser": "pnpm build && pnpm --filter @autoclawdev/server test:browser"
   }
 }

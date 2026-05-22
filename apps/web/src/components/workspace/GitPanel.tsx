@@ -13,11 +13,15 @@ import { DiffViewer } from "./DiffViewer";
 
 interface GitPanelProps {
   projectKey: string;
+  variant?: "workspace" | "sidebar";
 }
 
 type GitSectionId = "staged" | "changes" | "untracked";
 
-export function GitPanel({ projectKey }: GitPanelProps) {
+export function GitPanel({
+  projectKey,
+  variant = "workspace",
+}: GitPanelProps) {
   const {
     data: gitStatus,
     isLoading: statusLoading,
@@ -104,9 +108,23 @@ export function GitPanel({ projectKey }: GitPanelProps) {
     );
   }
 
+  const sidebarVariant = variant === "sidebar";
+
   return (
-    <div className="relative flex h-full min-h-0 bg-[#0d1117]">
-      <aside className="flex w-[320px] shrink-0 flex-col border-r border-[#30363d] bg-[#010409]">
+    <div
+      className={cn(
+        "relative flex h-full min-h-0 bg-[#0d1117]",
+        sidebarVariant && "flex-col",
+      )}
+    >
+      <aside
+        className={cn(
+          "flex flex-col bg-[#010409]",
+          sidebarVariant
+            ? "min-h-0 flex-1"
+            : "w-[320px] shrink-0 border-r border-[#30363d]",
+        )}
+      >
         <div className="border-b border-[#30363d] px-4 py-3">
           <div className="flex items-center gap-2 text-sm font-semibold text-[#e6edf3]">
             <GitBranch className="size-4 text-[#58a6ff]" />
@@ -203,15 +221,17 @@ export function GitPanel({ projectKey }: GitPanelProps) {
         ) : null}
       </aside>
 
-      <div className="min-w-0 flex-1 p-4">
-        <DiffViewer
-          path={selectedPath}
-          diff={diffResponse?.diff ?? ""}
-          file={diffResponse?.file ?? null}
-          isLoading={diffLoading}
-          error={diffError instanceof Error ? diffError.message : null}
-        />
-      </div>
+      {!sidebarVariant ? (
+        <div className="min-w-0 flex-1 p-4">
+          <DiffViewer
+            path={selectedPath}
+            diff={diffResponse?.diff ?? ""}
+            file={diffResponse?.file ?? null}
+            isLoading={diffLoading}
+            error={diffError instanceof Error ? diffError.message : null}
+          />
+        </div>
+      ) : null}
 
       <CommitDialog
         open={isCommitDialogOpen}

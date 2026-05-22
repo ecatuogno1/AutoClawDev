@@ -73,6 +73,10 @@ autoclaw github <project>       # view GitHub issues
 
 ```bash
 autoclaw audit <url>                        # web security audit
+autoclaw audit run <url> --project <key>   # structured project-backed web audit
+autoclaw audit resume <run-root>           # resume a gated or interrupted audit
+autoclaw audit approve <run-root> <gate>   # approve a bounded escalation gate
+autoclaw audit export <run-root>           # rebuild/export structured artifacts
 autoclaw ingest <project> [deep-review|qa|profile]  # feed findings into memory
 autoclaw memory <project>                   # initialize/refresh project memory
 autoclaw ui                                 # open web dashboard

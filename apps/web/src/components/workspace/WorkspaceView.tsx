@@ -1,144 +1,83 @@
-import { useEffect, useState } from "react";
-import { GitBranch, TerminalSquare } from "lucide-react";
-import { Chat } from "@/components/Chat";
-import { CodeViewer, type WorkspaceFileTarget } from "./CodeViewer";
-import { FileTree } from "./FileTree";
+import { useEffect, useRef, useState } from "react";
+import {
+  GitBranch,
+  MessageSquareText,
+  Plus,
+  SquareCheckBig,
+  TerminalSquare,
+} from "lucide-react";
+import { composerPaneIds } from "@autoclawdev/types";
+import {
+  activatePane,
+  closePane,
+  createTask,
+  deleteTask,
+  ensureComposerPane,
+  getComposerReferenceFile,
+  getPaneById,
+  openFilePane,
+  openGitPane,
+  openTaskPane,
+  openTerminalPane,
+  updateTask,
+  useComposerWorkspace,
+} from "@/lib/workspaceShell";
 import { useWorkspaceGitStatus } from "@/lib/api";
-import {
-  basenameOf,
-  getLanguageLabel,
-} from "@/components/workspace/filePresentation";
-import {
-  WorkspaceBottomPanel,
-  type WorkspaceBottomTab,
-} from "./WorkspaceBottomPanel";
-import { cn } from "@/lib/cn";
-
-const SIDEBAR_WIDTH_KEY = "autoclaw.workspace.sidebarWidth";
-const DEFAULT_SIDEBAR_WIDTH = 250;
-const MIN_SIDEBAR_WIDTH = 220;
-const MAX_SIDEBAR_WIDTH = 480;
+import { PaneHost } from "./PaneHost";
+import { PaneStrip } from "./PaneStrip";
 
 interface WorkspaceViewProps {
   projectKey: string;
-  projectName: string;
   projectPath: string;
 }
 
 export function WorkspaceView({
   projectKey,
-  projectName,
   projectPath,
 }: WorkspaceViewProps) {
-  const [openFiles, setOpenFiles] = useState<string[]>([]);
-  const [activeFile, setActiveFile] = useState<WorkspaceFileTarget | null>(null);
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
-  const [sidebarWidth, setSidebarWidth] = useState(() => readSidebarWidth());
-  const [activeBottomTab, setActiveBottomTab] = useState<WorkspaceBottomTab | null>(null);
-  const [isChatOpen, setIsChatOpen] = useState(true);
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
+  const addMenuRef = useRef<HTMLDivElement>(null);
   const { data: gitStatus } = useWorkspaceGitStatus(projectKey);
+  const shell = useComposerWorkspace(projectKey);
+  const activePane = getPaneById(shell.state, shell.state.activePaneId);
+  const currentFilePath = getComposerReferenceFile(shell.state);
+  const changedFilesCount = gitStatus?.counts.total ?? gitStatus?.files.length ?? 0;
+  const branchLabel = gitStatus?.branch || "unknown";
 
   useEffect(() => {
-    window.localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
-  }, [sidebarWidth]);
+    ensureComposerPane(projectKey);
+  }, [projectKey]);
 
-  const handleToggleDir = (path: string) => {
-    setExpandedDirs((current) => {
-      const next = new Set(current);
-      if (next.has(path)) {
-        next.delete(path);
-      } else {
-        next.add(path);
+  useEffect(() => {
+    if (!addMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (
+        addMenuRef.current &&
+        event.target instanceof Node &&
+        !addMenuRef.current.contains(event.target)
+      ) {
+        setAddMenuOpen(false);
       }
-      return next;
-    });
-  };
+    };
 
-  const handleSelectFile = (target: string | WorkspaceFileTarget) => {
-    const nextTarget =
-      typeof target === "string"
-        ? parseWorkspaceFileTarget(target)
-        : {
-            path: target.path,
-            line: target.line ?? null,
-          };
-
-    setOpenFiles((current) =>
-      current.includes(nextTarget.path) ? current : [...current, nextTarget.path],
-    );
-    setActiveFile(nextTarget);
-    expandAncestorDirectories(nextTarget.path, setExpandedDirs);
-  };
-
-  const handleCloseFile = (path: string) => {
-    setOpenFiles((current) => {
-      const index = current.indexOf(path);
-      if (index === -1) {
-        return current;
-      }
-
-      const next = current.filter((entry) => entry !== path);
-      setActiveFile((currentActive) => {
-        if (currentActive?.path !== path) {
-          return currentActive;
-        }
-
-        const fallbackPath = next[index] ?? next[index - 1] ?? null;
-        return fallbackPath ? { path: fallbackPath, line: null } : null;
-      });
-      return next;
-    });
-  };
-
-  const branchLabel = gitStatus?.branch || "unknown";
-  const activeFilePath = activeFile?.path ?? null;
-  const changedFilesCount = gitStatus?.counts.total ?? gitStatus?.files.length ?? 0;
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      window.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [addMenuOpen]);
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-[#30363d] bg-[#0d1117]">
-      <div
-        className="flex min-h-0 shrink-0 flex-col border-r border-[#30363d] bg-[#010409]"
-        style={{ width: `${sidebarWidth}px` }}
-      >
-        <div className="border-b border-[#30363d] px-4 py-3">
-          <div className="text-sm font-semibold text-[#e6edf3]">Workspace</div>
-          <div className="mt-1 text-xs text-[#8b949e]">{projectName}</div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto">
-          <FileTree
-            projectKey={projectKey}
-            activeFile={activeFilePath}
-            expandedDirs={expandedDirs}
-            onSelectFile={handleSelectFile}
-            onToggleDir={handleToggleDir}
-          />
-        </div>
-      </div>
-
-      <div
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize workspace sidebar"
-        className="group relative w-1 shrink-0 cursor-col-resize bg-[#0d1117]"
-        onMouseDown={handleResizeStart(sidebarWidth, setSidebarWidth)}
-      >
-        <div className="absolute inset-y-0 left-[-3px] right-[-3px] group-hover:bg-[#58a6ff20]" />
-      </div>
-
-      <div className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b border-[#30363d] px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-medium text-[#e6edf3]">
-              {activeFilePath ?? "No file selected"}
-            </div>
-            <div className="mt-1 text-xs text-[#8b949e]">
-              {activeFilePath
-                ? `Viewing ${basenameOf(activeFilePath)} in the workspace editor.`
-                : "Select a file to open it in the workspace editor."}
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="inline-flex items-center gap-2 rounded-full border border-[#30363d] bg-[#010409] px-3 py-1.5 text-xs text-[#8b949e]">
+    <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border border-[#30363d] bg-[radial-gradient(circle_at_top,rgba(31,111,235,0.08),transparent_28%),#0d1117] shadow-[0_18px_60px_rgba(0,0,0,0.28)]">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <PaneStrip
+          activePaneId={shell.state.activePaneId}
+          panes={shell.state.panes}
+          paneOrder={shell.state.paneOrder}
+          startAccessory={
+            <div className="inline-flex items-center gap-2 rounded-full border border-[#30363d] bg-[#010409] px-2.5 py-1 text-xs text-[#8b949e]">
               <GitBranch className="size-3.5 text-[#58a6ff]" />
               <span className="font-medium text-[#e6edf3]">{branchLabel}</span>
               {changedFilesCount > 0 ? (
@@ -147,212 +86,111 @@ export function WorkspaceView({
                 </span>
               ) : null}
             </div>
-            <button
-              type="button"
-              onClick={() => setIsChatOpen((current) => !current)}
-              className="rounded-md border border-[#30363d] px-3 py-1.5 text-xs font-medium text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
-            >
-              {isChatOpen ? "Hide Chat" : "Show Chat"}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                setActiveBottomTab((current) => (current === "git" ? null : "git"))
-              }
-              className={cn(
-                "inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
-                activeBottomTab === "git"
-                  ? "border-[#58a6ff] bg-[#1f6feb20] text-[#e6edf3]"
-                  : "border-[#30363d] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#e6edf3]",
-              )}
-            >
-              <GitBranch className="size-3.5" />
-              <span>Source Control</span>
-              {changedFilesCount > 0 ? (
-                <span className="rounded-full bg-[#1f6feb] px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                  {changedFilesCount}
-                </span>
-              ) : null}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                setActiveBottomTab((current) => (current === "terminal" ? null : "terminal"))
-              }
-              className={cn(
-                "inline-flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors",
-                activeBottomTab === "terminal"
-                  ? "border-[#58a6ff] bg-[#1f6feb20] text-[#e6edf3]"
-                  : "border-[#30363d] text-[#8b949e] hover:border-[#58a6ff] hover:text-[#e6edf3]",
-              )}
-            >
-              <TerminalSquare className="size-3.5" />
-              <span>{activeBottomTab === "terminal" ? "Hide Terminal" : "Show Terminal"}</span>
-            </button>
-          </div>
-        </div>
+          }
+          endAccessory={
+            <div className="relative" ref={addMenuRef}>
+              <button
+                type="button"
+                aria-expanded={addMenuOpen}
+                aria-haspopup="menu"
+                onClick={() => setAddMenuOpen((current) => !current)}
+                className="inline-flex size-8 items-center justify-center rounded-md text-[#8b949e] transition-colors hover:bg-[#161b22] hover:text-[#e6edf3]"
+                title="Add pane"
+              >
+                <Plus className="size-4" />
+              </button>
 
-        <div className="min-h-0 flex-1 overflow-hidden">
-          <div className="flex h-full min-h-0">
-            <div className="min-w-0 flex-1 overflow-hidden">
-              <CodeViewer
-                projectKey={projectKey}
-                openFiles={openFiles}
-                activeFile={activeFile}
-                onSelectFile={handleSelectFile}
-                onCloseFile={handleCloseFile}
-              />
-            </div>
-            {isChatOpen ? (
-              <>
-                <div className="w-px shrink-0 bg-[#30363d]" />
-                <div className="flex min-w-[360px] max-w-[42%] flex-1 flex-col bg-[#0d1117]">
-                  <div className="border-b border-[#30363d] px-4 py-3">
-                    <p className="text-sm font-semibold text-[#e6edf3]">Workspace Chat</p>
-                    <p className="mt-1 text-xs text-[#8b949e]">
-                      Tool-aware chat with project context and inline diff approvals.
-                    </p>
-                  </div>
-                  <div className="min-h-0 flex-1">
-                    <Chat
-                      initialProjectKey={projectKey}
-                      projectKeyLocked
-                      currentFilePath={activeFilePath}
-                      onOpenFile={handleSelectFile}
-                    />
-                  </div>
+              {addMenuOpen ? (
+                <div className="absolute right-0 top-[calc(100%+0.5rem)] z-20 min-w-56 overflow-hidden rounded-xl border border-[#30363d] bg-[#11161d] shadow-[0_24px_80px_rgba(0,0,0,0.35)]">
+                  {[
+                    {
+                      key: "composer",
+                      label: "Composer",
+                      description: "Focus the persistent workspace chat pane.",
+                      icon: MessageSquareText,
+                      onSelect: () => {
+                        ensureComposerPane(projectKey);
+                        activatePane(projectKey, composerPaneIds.composer(projectKey));
+                      },
+                    },
+                    {
+                      key: "git",
+                      label: "Source Control",
+                      description: "Open the source control pane in the workspace.",
+                      icon: GitBranch,
+                      onSelect: () => {
+                        openGitPane(projectKey);
+                      },
+                    },
+                    {
+                      key: "terminal",
+                      label: "Terminal",
+                      description: "Open a terminal pane in this workspace.",
+                      icon: TerminalSquare,
+                      onSelect: () => {
+                        openTerminalPane(projectKey);
+                      },
+                    },
+                    {
+                      key: "task",
+                      label: "Task",
+                      description: "Create a new work item pane in this workspace.",
+                      icon: SquareCheckBig,
+                      onSelect: () => {
+                        createTask(projectKey, {
+                          title: "New task",
+                          description: "",
+                          sourceMessageId: null,
+                        });
+                      },
+                    },
+                  ].map((item) => {
+                    const Icon = item.icon;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          item.onSelect();
+                          setAddMenuOpen(false);
+                        }}
+                        className="flex w-full items-start gap-3 border-b border-[#222a32] px-4 py-3 text-left text-sm transition-colors last:border-b-0 hover:bg-[#161b22]"
+                      >
+                        <Icon className="mt-0.5 size-4 shrink-0 text-[#58a6ff]" />
+                        <span className="min-w-0">
+                          <span className="block text-[#e6edf3]">{item.label}</span>
+                          <span className="mt-1 block text-xs text-[#8b949e]">
+                            {item.description}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-              </>
-            ) : null}
-          </div>
-        </div>
-
-        <WorkspaceBottomPanel
-          activeTab={activeBottomTab}
-          onActiveTabChange={setActiveBottomTab}
-          projectKey={projectKey}
-          projectPath={projectPath}
-          changedFilesCount={changedFilesCount}
+              ) : null}
+            </div>
+          }
+          onActivatePane={(paneId) => activatePane(projectKey, paneId)}
+          onClosePane={(paneId) => closePane(projectKey, paneId)}
         />
 
-        <div className="flex items-center gap-3 border-t border-[#30363d] bg-[#010409] px-4 py-2 text-xs text-[#8b949e]">
-          <span>Branch: {branchLabel}</span>
-          <span className="text-[#30363d]">|</span>
-          <span className="truncate">File: {activeFilePath ?? "None"}</span>
-          <span className="text-[#30363d]">|</span>
-          <span>
-            Language: {activeFilePath ? getLanguageLabel(inferLanguageFromPath(activeFilePath)) : "N/A"}
-          </span>
-          <span className="text-[#30363d]">|</span>
-          <span className="truncate">Project: {projectName}</span>
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <PaneHost
+            activePane={activePane}
+            currentFilePath={currentFilePath}
+            projectKey={projectKey}
+            projectPath={projectPath}
+            tasks={shell.tasks}
+            onCreateTask={(draft) => createTask(projectKey, draft)}
+            onDeleteTask={(taskId) => deleteTask(projectKey, taskId)}
+            onOpenFile={(path, line) => openFilePane(projectKey, path, line)}
+            onOpenTask={(taskId) => openTaskPane(projectKey, taskId)}
+            onUpdateTask={(taskId, patch) => updateTask(projectKey, taskId, patch)}
+          />
         </div>
+
       </div>
     </div>
   );
-}
-
-function handleResizeStart(
-  sidebarWidth: number,
-  setSidebarWidth: React.Dispatch<React.SetStateAction<number>>,
-) {
-  return (event: React.MouseEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    const startX = event.clientX;
-    const startWidth = sidebarWidth;
-
-    const handleMouseMove = (moveEvent: MouseEvent) => {
-      const nextWidth = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
-      setSidebarWidth(nextWidth);
-    };
-
-    const handleMouseUp = () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", handleMouseUp);
-      document.body.style.removeProperty("cursor");
-      document.body.style.removeProperty("user-select");
-    };
-
-    document.body.style.setProperty("cursor", "col-resize");
-    document.body.style.setProperty("user-select", "none");
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", handleMouseUp);
-  };
-}
-
-function parseWorkspaceFileTarget(input: string): WorkspaceFileTarget {
-  const match = input.match(/^(.*?):(\d+)(?::(\d+))?$/);
-  if (!match?.[1]) {
-    return { path: input, line: null };
-  }
-
-  return {
-    path: match[1],
-    line: Number.parseInt(match[2] ?? "", 10) || null,
-  };
-}
-
-function expandAncestorDirectories(
-  path: string,
-  setExpandedDirs: React.Dispatch<React.SetStateAction<Set<string>>>,
-) {
-  const segments = path.split("/");
-  if (segments.length <= 1) {
-    return;
-  }
-
-  setExpandedDirs((current) => {
-    const next = new Set(current);
-    for (let index = 1; index < segments.length; index += 1) {
-      next.add(segments.slice(0, index).join("/"));
-    }
-    return next;
-  });
-}
-
-function inferLanguageFromPath(path: string) {
-  const extension = path.split(".").pop()?.toLowerCase();
-  switch (extension) {
-    case "ts":
-    case "tsx":
-      return "typescript";
-    case "js":
-    case "jsx":
-      return "javascript";
-    case "json":
-      return "json";
-    case "md":
-      return "markdown";
-    case "css":
-      return "css";
-    case "html":
-      return "html";
-    case "yml":
-    case "yaml":
-      return "yaml";
-    case "py":
-      return "python";
-    case "sh":
-    case "zsh":
-      return "bash";
-    default:
-      return "plaintext";
-  }
-}
-
-function clampSidebarWidth(width: number) {
-  return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, width));
-}
-
-function readSidebarWidth() {
-  if (typeof window === "undefined") {
-    return DEFAULT_SIDEBAR_WIDTH;
-  }
-
-  const raw = window.localStorage.getItem(SIDEBAR_WIDTH_KEY);
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
-    return DEFAULT_SIDEBAR_WIDTH;
-  }
-
-  return clampSidebarWidth(parsed);
 }

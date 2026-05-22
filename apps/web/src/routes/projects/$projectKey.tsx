@@ -1,9 +1,11 @@
-import { createFileRoute, Outlet } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
+import { ProjectRouteLayout } from "@/components/ProjectRouteLayout";
 
 export const Route = createFileRoute("/projects/$projectKey")({
   component: ProjectLayout,
 });
 
 function ProjectLayout() {
-  return <Outlet />;
+  const { projectKey } = Route.useParams();
+  return <ProjectRouteLayout projectKey={projectKey} />;
 }

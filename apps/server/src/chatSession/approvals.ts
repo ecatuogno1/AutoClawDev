@@ -21,6 +21,12 @@ export function getPendingApproval(requestId: string) {
   return pendingApprovals.get(requestId);
 }
 
+export function listPendingApprovals() {
+  return Array.from(pendingApprovals.values()).sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
+  );
+}
+
 export function deletePendingApproval(requestId: string) {
   pendingApprovals.delete(requestId);
 }

@@ -538,9 +538,37 @@ Implement ${PHASE_NAME} now. Do not stop until all criteria pass."
     echo "  Running ${PROVIDER}..."
     "${CMD[@]}" "$PROMPT" 2>&1 | tee "$TTY_LOG"
 
+    # CodeRabbit review — catch issues before commit/verify
+    echo ""
+    echo "  Running CodeRabbit review..."
+    if command -v coderabbit &>/dev/null; then
+      CR_OUTPUT=$(cd "$PROJECT_PATH" && coderabbit review --type uncommitted --plain --no-color 2>&1 || true)
+      CR_ISSUES=$(echo "$CR_OUTPUT" | grep -ciE "issue|warning|error|suggestion|fix" || echo 0)
+      if [ "$CR_ISSUES" -gt 0 ]; then
+        echo "  CodeRabbit found $CR_ISSUES items. Sending fixes to agent..."
+        CR_FIX_PROMPT="CodeRabbit reviewed your changes and found issues. Fix ALL of them before committing.
+
+## CodeRabbit Review Output:
+$CR_OUTPUT
+
+## Rules:
+1. Fix every issue CodeRabbit found.
+2. Do NOT revert working code — only fix the flagged issues.
+3. Run lint and tests after fixing.
+4. Commit when all issues are resolved."
+
+        "${CMD[@]}" "$CR_FIX_PROMPT" 2>&1 | tee -a "$TTY_LOG"
+        echo "  CodeRabbit fixes applied."
+      else
+        echo "  ✓ CodeRabbit: clean"
+      fi
+    else
+      echo "  ⚠ coderabbit not found, skipping review"
+    fi
+
     # Verify
     echo ""
-    echo "  Session ended. Verifying..."
+    echo "  Verifying..."
 
     if verify_phase "$PHASE_NUM" "$PHASE_NAME"; then
       phase_done=true
@@ -561,15 +589,23 @@ Implement ${PHASE_NAME} now. Do not stop until all criteria pass."
     fi
   done
 
-  # Record progress
+  # Record progress — mark this phase as done.
+  # The progress.md may have task-level checkboxes (- [ ] 1.1 ...) or phase-level
+  # headers (## Phase 1: ...). We need to ensure a - [x] Phase N line exists
+  # that run-all-builds.sh can count.
   if [ ! -f "$PROGRESS_FILE" ]; then
     echo "# Build Progress" > "$PROGRESS_FILE"
     echo "" >> "$PROGRESS_FILE"
   fi
-  if ! grep -q "${PHASE_NAME}" "$PROGRESS_FILE" 2>/dev/null; then
+
+  # Try sed replacement first (handles "- [ ] Phase N: ..." lines)
+  local escaped_name
+  escaped_name=$(printf '%s' "$PHASE_NAME" | sed 's/[&/\\]/\\&/g')
+  sed -i '' "s|^\- \[ \] ${escaped_name}.*|- [x] ${escaped_name} — $(date -Iseconds)|" "$PROGRESS_FILE" 2>/dev/null || true
+
+  # If no [x] line for this phase exists yet, append one
+  if ! grep -q "^\- \[x\] ${PHASE_NAME}" "$PROGRESS_FILE" 2>/dev/null; then
     echo "- [x] ${PHASE_NAME} — $(date -Iseconds) ($attempt attempt(s))" >> "$PROGRESS_FILE"
-  else
-    sed -i '' "s|\[ \] ${PHASE_NAME}.*|[x] ${PHASE_NAME} — $(date -Iseconds)|" "$PROGRESS_FILE" 2>/dev/null || true
   fi
   echo ""
   echo "  ✓ Phase $PHASE_NUM recorded ($attempt attempt(s))."

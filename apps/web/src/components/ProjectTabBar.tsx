@@ -14,8 +14,12 @@ export function ProjectTabBar({ projectKey }: { projectKey: string | null }) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const goToProject = useCallback(
-    (nextProjectKey: string) =>
-      navigate({ to: "/projects/$projectKey", params: { projectKey: nextProjectKey } }),
+    (nextProjectKey: string) => {
+      return navigate({
+        to: "/projects/$projectKey/workspace",
+        params: { projectKey: nextProjectKey },
+      });
+    },
     [navigate],
   );
 

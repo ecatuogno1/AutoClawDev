@@ -1,21 +1,16 @@
 import { type ReactNode, useDeferredValue, useEffect, useMemo, useRef } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { FileCode2, LoaderCircle, PanelTopOpen, X } from "lucide-react";
+import { FileCode2, LoaderCircle, PanelTopOpen } from "lucide-react";
 import { useFileContent } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import {
-  basenameOf,
   formatBytes,
-  getFileIcon,
   getLanguageLabel,
 } from "@/components/workspace/filePresentation";
 
 interface CodeViewerProps {
   projectKey: string;
-  openFiles: readonly string[];
   activeFile: WorkspaceFileTarget | null;
-  onSelectFile: (path: string) => void;
-  onCloseFile: (path: string) => void;
 }
 
 export interface WorkspaceFileTarget {
@@ -73,7 +68,7 @@ export function CodeViewer(props: CodeViewerProps) {
     });
   }, [activePath, lineTarget, rowVirtualizer]);
 
-  if (props.openFiles.length === 0 || !activePath) {
+  if (!activePath) {
     return (
       <div className="flex h-full min-h-[380px] items-center justify-center px-8 py-12">
         <div className="max-w-md rounded-2xl border border-dashed border-[#30363d] bg-[#161b22]/60 px-8 py-10 text-center">
@@ -94,45 +89,6 @@ export function CodeViewer(props: CodeViewerProps) {
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#0d1117]">
       <div className="border-b border-[#30363d] bg-[#010409]/85">
-        <div className="flex min-w-0 items-center overflow-x-auto">
-          {props.openFiles.map((path) => {
-            const isActive = path === activePath;
-            const Icon = getFileIcon(path, isActive ? metadata?.language : undefined);
-            const label = basenameOf(path);
-            return (
-              <div
-                key={path}
-                className={cn(
-                  "group flex shrink-0 items-center border-r border-[#30363d] text-sm transition-colors",
-                  isActive
-                    ? "bg-[#161b22] text-[#e6edf3]"
-                    : "bg-[#010409]/85 text-[#8b949e] hover:bg-[#161b22]/80 hover:text-[#c9d1d9]",
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => props.onSelectFile(path)}
-                  className="flex min-w-0 items-center gap-2 px-3 py-2"
-                  title={path}
-                >
-                  <Icon className="size-4 shrink-0" />
-                  <span className="max-w-44 truncate">{label}</span>
-                </button>
-                <button
-                  type="button"
-                  aria-label={`Close ${label}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    props.onCloseFile(path);
-                  }}
-                  className="mr-2 rounded p-0.5 text-[#6e7681] transition-colors group-hover:text-[#8b949e] hover:bg-[#30363d] hover:text-[#e6edf3]"
-                >
-                  <X className="size-3.5" />
-                </button>
-              </div>
-            );
-          })}
-        </div>
         <div className="flex items-center justify-between gap-4 px-4 py-2 text-xs text-[#8b949e]">
           <div className="min-w-0 truncate">{activePath}</div>
           <div className="shrink-0">

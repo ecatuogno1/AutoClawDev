@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { ChatProvider } from "@autoclawdev/types";
+import type { ChatModel, ChatProvider } from "@autoclawdev/types";
 import { buildChatPrompt, streamChatProcess } from "./runtime.js";
 import { chatSessionStore } from "./sessionStore.js";
 import { buildPersistentSystemPrompt, resolveWorkingDirectory } from "./systemPrompt.js";
@@ -12,6 +12,7 @@ class ChatSessionManager {
   async startSession(props: {
     cwd?: string;
     id?: string;
+    model: ChatModel;
     projectKey?: string;
     provider: ChatProvider;
   }) {
@@ -25,6 +26,7 @@ class ChatSessionManager {
     return await chatSessionStore.createSession({
       cwd,
       id,
+      model: props.model,
       projectKey: props.projectKey,
       provider: props.provider,
       systemPrompt,
@@ -48,6 +50,7 @@ class ChatSessionManager {
     return sessions.map((session) => ({
       id: session.id,
       provider: session.provider,
+      model: session.model,
       cwd: session.cwd,
       createdAt: session.createdAt,
       lastMessageAt: session.lastMessageAt,
@@ -159,7 +162,7 @@ class ChatSessionManager {
       "--dangerously-skip-permissions",
       "--verbose",
       "--model",
-      "opus",
+      session.model,
     ];
 
     if (session.claudeSessionReady) {
@@ -190,7 +193,7 @@ class ChatSessionManager {
         "exec",
         prompt,
         "-m",
-        "gpt-5.4",
+        session.model,
         "--json",
         "--color",
         "never",

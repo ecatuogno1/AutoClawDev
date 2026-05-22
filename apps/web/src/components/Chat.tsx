@@ -1,26 +1,57 @@
-import type { ChatMessage } from "@autoclawdev/types";
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
-import { CornerDownLeft, LoaderCircle, Paperclip, Square } from "lucide-react";
+import type { ChatMessage, ChatModel } from "@autoclawdev/types";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { LoaderCircle } from "lucide-react";
 import { useProjects } from "@/lib/api";
 import {
   CHAT_HISTORY_EVENT,
   addRecentChat,
   clearStoredChatSession,
+  getStoredChatModelSelections,
   getStoredChatProvider,
   getStoredChatSession,
+  setStoredChatModelSelection,
   setStoredChatProvider,
   setStoredChatSession,
 } from "@/lib/chatHistory";
 import { ChatMarkdown } from "@/components/chat/ChatMarkdown";
+import { ChatComposer } from "@/components/chat/ChatComposer";
+import type { ComposerPromptEditorHandle } from "@/components/chat/ComposerPromptEditor";
 import { ToolCallCard } from "@/components/chat/ToolCallCard";
 import type { ChatProvider, ChatTimelineItem, ChatToolCall } from "@/components/chat/types";
 import { cn } from "@/lib/cn";
+
+const CHAT_MODEL_OPTIONS: Record<ChatProvider, Array<{ value: ChatModel; label: string }>> = {
+  claude: [
+    { value: "opus", label: "Opus" },
+    { value: "sonnet", label: "Sonnet" },
+  ],
+  codex: [
+    { value: "gpt-5.4", label: "GPT-5.4" },
+    { value: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
+  ],
+};
 
 interface ChatProps {
   initialProjectKey?: string;
   projectKeyLocked?: boolean;
   currentFilePath?: string | null;
+  sessionScopeKey?: string | null;
+  afterTimeline?: ReactNode;
   onOpenFile?: (path: string) => void;
+  surface?: "workspace" | "floating";
+  onCreateTaskFromAssistant?: (draft: {
+    title: string;
+    description: string;
+    sourceMessageId: string;
+  }) => void;
   onAssistantMessage?: (message: {
     id: string;
     provider: ChatProvider;
@@ -38,6 +69,7 @@ interface SessionHistoryMessage {
   type: "session-created" | "session-resumed";
   sessionId: string;
   provider: ChatProvider;
+  model: ChatModel;
   cwd: string;
   createdAt: string;
   lastMessageAt: string;
@@ -50,6 +82,7 @@ interface MessageStartedMessage {
   type: "message-started";
   sessionId: string;
   provider: ChatProvider;
+  model: ChatModel;
   cwd: string;
   timestamp: string;
   messageCount: number;
@@ -106,20 +139,33 @@ type ServerMessage =
   | ErrorMessage;
 
 type SessionRequest =
-  | { type: "create"; provider: ChatProvider }
-  | { type: "resume"; provider: ChatProvider; sessionId: string };
+  | { type: "create"; provider: ChatProvider; model: ChatModel }
+  | { type: "resume"; provider: ChatProvider; model: ChatModel; sessionId: string };
+
+function getSessionRequestKey(request: SessionRequest) {
+  return request.type === "resume"
+    ? `resume:${request.provider}:${request.model}:${request.sessionId}`
+    : `create:${request.provider}:${request.model}`;
+}
 
 export function Chat({
+  afterTimeline,
   currentFilePath = null,
   initialProjectKey,
+  onCreateTaskFromAssistant,
   onAssistantMessage,
   onOpenFile,
   projectKeyLocked = false,
+  sessionScopeKey = null,
+  surface = "workspace",
 }: ChatProps) {
   const [timeline, setTimeline] = useState<ChatTimelineItem[]>([]);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [provider, setProvider] = useState<ChatProvider>(() => getStoredChatProvider());
+  const [modelSelections, setModelSelections] = useState<Record<ChatProvider, ChatModel>>(() =>
+    getStoredChatModelSelections(),
+  );
   const [projectKey, setProjectKey] = useState(initialProjectKey ?? "");
   const [sessionId, setSessionId] = useState("");
   const [includeCurrentFile, setIncludeCurrentFile] = useState(Boolean(currentFilePath));
@@ -129,16 +175,19 @@ export function Chat({
   const [sessionCreatedAt, setSessionCreatedAt] = useState<string | null>(null);
   const [sessionCwd, setSessionCwd] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const composerRef = useRef<ComposerPromptEditorHandle>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const disposedRef = useRef(false);
   const sessionIdRef = useRef("");
   const providerRef = useRef(provider);
+  const modelSelectionsRef = useRef(modelSelections);
   const projectKeyRef = useRef(projectKey);
+  const inflightSessionRequestRef = useRef<string | null>(null);
   const announcedAssistantIdsRef = useRef(new Set<string>());
   const sessionRequestRef = useRef<SessionRequest | null>(null);
   const didMountProviderRef = useRef(false);
+  const didMountSessionScopeRef = useRef(false);
   const ignoreNextProviderResetRef = useRef(false);
   const { data: projects } = useProjects();
 
@@ -149,6 +198,10 @@ export function Chat({
   useEffect(() => {
     providerRef.current = provider;
   }, [provider]);
+
+  useEffect(() => {
+    modelSelectionsRef.current = modelSelections;
+  }, [modelSelections]);
 
   useEffect(() => {
     projectKeyRef.current = projectKey;
@@ -169,6 +222,7 @@ export function Chat({
   useEffect(() => {
     const syncProvider = () => {
       setProvider(getStoredChatProvider());
+      setModelSelections(getStoredChatModelSelections());
     };
 
     window.addEventListener(CHAT_HISTORY_EVENT, syncProvider as EventListener);
@@ -182,6 +236,8 @@ export function Chat({
   useEffect(() => {
     setStoredChatProvider(provider);
   }, [provider]);
+
+  const selectedModel = modelSelections[provider];
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -362,6 +418,7 @@ export function Chat({
   const syncSession = useCallback(
     (message: SessionHistoryMessage) => {
       sessionRequestRef.current = null;
+      inflightSessionRequestRef.current = null;
       sessionIdRef.current = message.sessionId;
       setSessionId(message.sessionId);
       setSessionCreatedAt(message.createdAt);
@@ -370,15 +427,27 @@ export function Chat({
       setStreaming(false);
       markStreamingComplete();
       applySessionHistory(message.history);
-      setStoredChatSession({
-        provider: message.provider,
-        sessionId: message.sessionId,
-      });
+      setStoredChatSession(
+        {
+          provider: message.provider,
+          model: message.model,
+          sessionId: message.sessionId,
+        },
+        sessionScopeKey,
+      );
 
       if (message.provider !== providerRef.current) {
         ignoreNextProviderResetRef.current = true;
         setProvider(message.provider);
       }
+
+      setModelSelections((current) => {
+        if (current[message.provider] === message.model) {
+          return current;
+        }
+        return { ...current, [message.provider]: message.model };
+      });
+      setStoredChatModelSelection(message.provider, message.model);
     },
     [applySessionHistory, markStreamingComplete],
   );
@@ -395,42 +464,67 @@ export function Chat({
 
   const dispatchSessionRequest = useCallback(
     (request: SessionRequest) => {
-      sessionRequestRef.current = request;
+      const requestKey = getSessionRequestKey(request);
+      const socket = socketRef.current;
 
-      if (request.type === "resume") {
-        return sendSocketMessage({
-          type: "resume-session",
-          sessionId: request.sessionId,
-        });
+      if (
+        inflightSessionRequestRef.current === requestKey &&
+        socket?.readyState === WebSocket.OPEN
+      ) {
+        sessionRequestRef.current = request;
+        return true;
       }
 
-      return sendSocketMessage({
-        type: "create-session",
-        provider: request.provider,
-        projectKey: projectKeyRef.current || undefined,
-      });
+      sessionRequestRef.current = request;
+      const sent =
+        request.type === "resume"
+          ? sendSocketMessage({
+              type: "resume-session",
+              sessionId: request.sessionId,
+            })
+          : sendSocketMessage({
+              type: "create-session",
+              model: request.model,
+              provider: request.provider,
+              projectKey: projectKeyRef.current || undefined,
+            });
+
+      if (sent) {
+        inflightSessionRequestRef.current = requestKey;
+      }
+
+      return sent;
     },
     [sendSocketMessage],
   );
 
   const queueDefaultSessionRequest = useCallback(() => {
-    const storedSession = getStoredChatSession();
-    if (storedSession && storedSession.provider === providerRef.current) {
+    const storedSession = getStoredChatSession(sessionScopeKey);
+    const currentProvider = providerRef.current;
+    const currentModel = modelSelectionsRef.current[currentProvider];
+
+    if (
+      storedSession &&
+      storedSession.provider === currentProvider &&
+      storedSession.model === currentModel
+    ) {
       return dispatchSessionRequest({
         type: "resume",
         provider: storedSession.provider,
+        model: storedSession.model,
         sessionId: storedSession.sessionId,
       });
     }
 
-    clearStoredChatSession();
+    clearStoredChatSession(sessionScopeKey);
     return dispatchSessionRequest({
       type: "create",
-      provider: providerRef.current,
+      model: currentModel,
+      provider: currentProvider,
     });
-  }, [dispatchSessionRequest]);
+  }, [dispatchSessionRequest, sessionScopeKey]);
 
-  const connectSocket = useCallback(() => {
+  const connectSocket = useEffectEvent(() => {
     if (disposedRef.current) {
       return;
     }
@@ -451,6 +545,7 @@ export function Chat({
 
     socket.onopen = () => {
       setConnectionState("connected");
+      inflightSessionRequestRef.current = null;
       if (sessionRequestRef.current) {
         dispatchSessionRequest(sessionRequestRef.current);
         return;
@@ -476,6 +571,7 @@ export function Chat({
           syncSession(message);
           return;
         case "message-started":
+          inflightSessionRequestRef.current = null;
           sessionIdRef.current = message.sessionId;
           setSessionId(message.sessionId);
           setSessionCwd(message.cwd);
@@ -523,9 +619,11 @@ export function Chat({
             sessionRequestRef.current?.type === "resume" &&
             message.sessionId === sessionRequestRef.current.sessionId
           ) {
-            clearStoredChatSession();
+            clearStoredChatSession(sessionScopeKey);
+            inflightSessionRequestRef.current = null;
             dispatchSessionRequest({
               type: "create",
+              model: modelSelectionsRef.current[providerRef.current],
               provider: providerRef.current,
             });
             appendItem({
@@ -552,6 +650,7 @@ export function Chat({
 
     socket.onclose = () => {
       socketRef.current = null;
+      inflightSessionRequestRef.current = null;
       if (disposedRef.current) {
         setConnectionState("disconnected");
         return;
@@ -568,16 +667,7 @@ export function Chat({
     socket.onerror = () => {
       socket.close();
     };
-  }, [
-    announceAssistantMessage,
-    appendItem,
-    dispatchSessionRequest,
-    markStreamingComplete,
-    queueDefaultSessionRequest,
-    syncSession,
-    upsertAssistantMessage,
-    upsertToolCall,
-  ]);
+  });
 
   const deleteSession = useCallback(async (id: string) => {
     await fetch(`/api/chat/session/${encodeURIComponent(id)}`, {
@@ -585,12 +675,14 @@ export function Chat({
     }).catch(() => undefined);
   }, []);
 
-  const startFreshSession = useEffectEvent(async (nextProvider: ChatProvider) => {
-    const previousSessionId = sessionIdRef.current || getStoredChatSession()?.sessionId || "";
+  const startFreshSession = useEffectEvent(async (nextProvider: ChatProvider, nextModel: ChatModel) => {
+    const previousSessionId =
+      sessionIdRef.current || getStoredChatSession(sessionScopeKey)?.sessionId || "";
 
-    clearStoredChatSession();
+    clearStoredChatSession(sessionScopeKey);
     sessionIdRef.current = "";
-    sessionRequestRef.current = { type: "create", provider: nextProvider };
+    sessionRequestRef.current = { type: "create", provider: nextProvider, model: nextModel };
+    inflightSessionRequestRef.current = null;
     announcedAssistantIdsRef.current.clear();
     setTimeline([]);
     setSessionId("");
@@ -604,10 +696,18 @@ export function Chat({
       void deleteSession(previousSessionId);
     }
 
-    if (!dispatchSessionRequest({ type: "create", provider: nextProvider })) {
+    if (!dispatchSessionRequest({ type: "create", provider: nextProvider, model: nextModel })) {
       connectSocket();
     }
   });
+
+  useEffect(() => {
+    if (!didMountSessionScopeRef.current) {
+      didMountSessionScopeRef.current = true;
+      return;
+    }
+    void startFreshSession(providerRef.current, modelSelectionsRef.current[providerRef.current]);
+  }, [sessionScopeKey]);
 
   useEffect(() => {
     disposedRef.current = false;
@@ -621,7 +721,7 @@ export function Chat({
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [connectSocket]);
+  }, []);
 
   useEffect(() => {
     if (!didMountProviderRef.current) {
@@ -634,7 +734,7 @@ export function Chat({
       return;
     }
 
-    void startFreshSession(provider);
+    void startFreshSession(provider, modelSelectionsRef.current[provider]);
   }, [provider]);
 
   const sendMessage = useCallback(async () => {
@@ -781,13 +881,6 @@ export function Chat({
     [appendItem],
   );
 
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      void sendMessage();
-    }
-  };
-
   const connectionLabel =
     connectionState === "connected"
       ? "Connected"
@@ -799,95 +892,6 @@ export function Chat({
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#0d1117]">
-      <div className="border-b border-[#30363d] bg-[linear-gradient(180deg,#11161d_0%,#0d1117_100%)] px-5 py-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex rounded-lg bg-[#21262d] p-0.5">
-            {(["claude", "codex"] as const).map((option) => (
-              <button
-                key={option}
-                type="button"
-                onClick={() => setProvider(option)}
-                className={cn(
-                  "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                  provider === option
-                    ? "bg-[#1f6feb] text-white"
-                    : "text-[#8b949e] hover:text-[#e6edf3]",
-                )}
-              >
-                {option === "claude" ? "Claude" : "Codex"}
-              </button>
-            ))}
-          </div>
-
-          {!projectKeyLocked ? (
-            <select
-              value={projectKey}
-              onChange={(event) => setProjectKey(event.target.value)}
-              className="rounded-lg border border-[#30363d] bg-[#0d1117] px-3 py-1.5 text-xs text-[#e6edf3]"
-            >
-              <option value="">Home directory</option>
-              {projects?.map((project) => (
-                <option key={project.key} value={project.key}>
-                  {project.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className="rounded-lg border border-[#30363d] bg-[#0d1117] px-3 py-1.5 text-xs text-[#8b949e]">
-              {activeProjectLabel}
-            </div>
-          )}
-
-          {currentFilePath ? (
-            <button
-              type="button"
-              onClick={() => setIncludeCurrentFile((current) => !current)}
-              className={cn(
-                "inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs transition-colors",
-                includeCurrentFile
-                  ? "border-[#2b4a63] bg-[#101c29] text-[#d7ebff]"
-                  : "border-[#30363d] bg-[#0d1117] text-[#8b949e] hover:text-[#e6edf3]",
-              )}
-            >
-              <Paperclip className="size-3.5" />
-              {includeCurrentFile ? "Including current file" : "Reference current file"}
-            </button>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={() => void startFreshSession(provider)}
-            className="rounded-lg border border-[#30363d] bg-[#0d1117] px-3 py-1.5 text-xs text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
-          >
-            New session
-          </button>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-[#8b949e]">
-          <span className="inline-flex items-center gap-1.5 rounded-full border border-[#30363d] bg-[#0d1117] px-2.5 py-1">
-            <span
-              className={cn(
-                "size-2 rounded-full",
-                connectionState === "connected"
-                  ? "bg-[#3fb950]"
-                  : connectionState === "disconnected"
-                    ? "bg-[#f85149]"
-                    : "bg-[#d29922]",
-              )}
-            />
-            {connectionLabel}
-          </span>
-
-          <span>
-            Session {sessionId ? "ready" : "pending"}
-            {visibleMessageCount > 0 ? ` • ${visibleMessageCount} messages` : ""}
-          </span>
-
-          {sessionStartedLabel ? <span>Started {sessionStartedLabel}</span> : null}
-          {sessionCwd ? <span className="truncate">cwd: {sessionCwd}</span> : null}
-        </div>
-      </div>
-
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:px-5">
         {timeline.length === 0 ? (
           <EmptyState
@@ -895,7 +899,7 @@ export function Chat({
             currentFilePath={currentFilePath}
             onSelectSuggestion={(suggestion) => {
               setInput(suggestion);
-              inputRef.current?.focus();
+              composerRef.current?.focusAtEnd();
             }}
           />
         ) : (
@@ -928,6 +932,23 @@ export function Chat({
                   <div key={item.id} className="flex justify-start">
                     <div className="max-w-[min(100%,56rem)] rounded-[28px] border border-[#30363d] bg-[#161b22] px-4 py-3 shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
                       <ChatMarkdown text={item.text} isStreaming={item.streaming} />
+                      {!item.streaming && onCreateTaskFromAssistant ? (
+                        <div className="mt-3">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onCreateTaskFromAssistant({
+                                title: summarizeTaskTitle(item.text),
+                                description: item.text,
+                                sourceMessageId: item.id,
+                              })
+                            }
+                            className="rounded-full border border-[#30363d] bg-[#0d1117] px-3 py-1.5 text-xs text-[#8b949e] transition-colors hover:border-[#58a6ff] hover:text-[#e6edf3]"
+                          >
+                            Create Task
+                          </button>
+                        </div>
+                      ) : null}
                       {item.streaming ? (
                         <div className="mt-3 flex items-center gap-2 text-xs text-[#8b949e]">
                           <LoaderCircle className="size-3.5 animate-spin" />
@@ -975,55 +996,50 @@ export function Chat({
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="border-t border-[#30363d] bg-[#0d1117] p-4">
-        <div className="mb-3 flex items-start gap-2 rounded-2xl border border-[#30363d] bg-[#11161d] px-4 py-3">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            onKeyDown={handleKeyDown}
-            rows={3}
-            placeholder={
-              currentFilePath && includeCurrentFile
-                ? `Ask about ${currentFilePath} or the ${activeProjectLabel} workspace…`
-                : `Ask about ${activeProjectLabel}…`
-            }
-            className="min-h-[72px] flex-1 resize-none bg-transparent text-sm leading-6 text-[#e6edf3] outline-none placeholder:text-[#6e7681]"
-          />
-          <button
-            type="button"
-            onClick={() => {
-              if (streaming) {
-                stopStreaming();
-              } else {
-                void sendMessage();
-              }
-            }}
-            disabled={
-              !streaming &&
-              (input.trim().length === 0 ||
-                connectionState !== "connected" ||
-                sessionId.length === 0)
-            }
-            className={cn(
-              "inline-flex items-center gap-2 rounded-xl border px-3 py-2 text-sm font-medium transition-colors",
-              streaming
-                ? "border-[#6f2f35] bg-[#221116] text-[#f85149] hover:border-[#f85149]"
-                : "border-[#1f6feb] bg-[#1f6feb] text-white hover:bg-[#388bfd]",
-              !streaming &&
-                (input.trim().length === 0 ||
-                  connectionState !== "connected" ||
-                  sessionId.length === 0) &&
-                "cursor-not-allowed border-[#30363d] bg-[#161b22] text-[#6e7681]",
-            )}
-          >
-            {streaming ? <Square className="size-4" /> : <CornerDownLeft className="size-4" />}
-            {streaming ? "Stop" : "Send"}
-          </button>
+      {afterTimeline ? (
+        <div className="border-t border-[#30363d] bg-[#0d1117] px-4 py-4 sm:px-5">
+          {afterTimeline}
         </div>
-        <p className="text-xs text-[#6e7681]">
-          Enter sends. Shift+Enter adds a newline.
-        </p>
+      ) : null}
+
+      <div className="mt-auto flex-none bg-[#0d1117]">
+        <ChatComposer
+          surface={surface}
+          provider={provider}
+          projectKey={projectKey}
+          projectKeyLocked={projectKeyLocked}
+          activeProjectLabel={activeProjectLabel}
+          currentFilePath={currentFilePath}
+          includeCurrentFile={includeCurrentFile}
+          input={input}
+          model={selectedModel}
+          modelOptions={CHAT_MODEL_OPTIONS[provider]}
+          streaming={streaming}
+          connectionState={connectionState}
+          connectionLabel={connectionLabel}
+          sessionId={sessionId}
+          visibleMessageCount={visibleMessageCount}
+          sessionStartedLabel={sessionStartedLabel}
+          sessionCwd={sessionCwd}
+          projects={projects}
+          editorRef={composerRef}
+          setProvider={setProvider}
+          setProjectKey={setProjectKey}
+          setIncludeCurrentFile={setIncludeCurrentFile}
+          onInputChange={setInput}
+          onModelSelect={(model) => {
+            setModelSelections((current) => ({ ...current, [provider]: model }));
+            setStoredChatModelSelection(provider, model);
+            void startFreshSession(provider, model);
+          }}
+          onSubmit={() => {
+            void sendMessage();
+          }}
+          onStop={stopStreaming}
+          onStartFreshSession={() => {
+            void startFreshSession(provider, selectedModel);
+          }}
+        />
       </div>
     </div>
   );
@@ -1076,4 +1092,22 @@ function buildChatSocketUrl() {
   const url = new URL("/ws/chat", window.location.href);
   url.protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return url.toString();
+}
+
+function summarizeTaskTitle(text: string) {
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+
+  if (!firstLine) {
+    return "New task";
+  }
+
+  return (
+    firstLine
+      .replace(/^[-*#>\d.\s`]+/, "")
+      .replace(/\s+/g, " ")
+      .slice(0, 80) || "New task"
+  );
 }

@@ -12,9 +12,9 @@ function SettingsPage() {
       desc: "JSON files defining each project's config",
     },
     {
-      label: "Experiment Logs",
+      label: "Legacy Workspace",
       path: "~/.openclaw/workspace/autoresearch/",
-      desc: "JSONL experiment history per project",
+      desc: "Legacy import-only workspace retained for historical reference",
     },
     {
       label: "Runner Script",

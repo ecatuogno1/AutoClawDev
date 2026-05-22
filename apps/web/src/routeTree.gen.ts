@@ -17,6 +17,7 @@ import { Route as ExperimentsIndexRouteImport } from "./routes/experiments/index
 import { Route as ProjectsProjectKeyRouteImport } from "./routes/projects/$projectKey"
 import { Route as ProjectsProjectKeyIndexRouteImport } from "./routes/projects/$projectKey/index"
 import { Route as ProjectsProjectKeyWorkspaceRouteImport } from "./routes/projects/$projectKey/workspace"
+import { Route as ProjectsProjectKeyWebAuditsRouteImport } from "./routes/projects/$projectKey/web-audits"
 import { Route as ProjectsProjectKeyReviewsRouteImport } from "./routes/projects/$projectKey/reviews"
 import { Route as ProjectsProjectKeyMemoryRouteImport } from "./routes/projects/$projectKey/memory"
 
@@ -61,6 +62,12 @@ const ProjectsProjectKeyWorkspaceRoute =
     path: "/workspace",
     getParentRoute: () => ProjectsProjectKeyRoute,
   } as any)
+const ProjectsProjectKeyWebAuditsRoute =
+  ProjectsProjectKeyWebAuditsRouteImport.update({
+    id: "/web-audits",
+    path: "/web-audits",
+    getParentRoute: () => ProjectsProjectKeyRoute,
+  } as any)
 const ProjectsProjectKeyReviewsRoute =
   ProjectsProjectKeyReviewsRouteImport.update({
     id: "/reviews",
@@ -83,6 +90,7 @@ export interface FileRoutesByFullPath {
   "/projects/": typeof ProjectsIndexRoute
   "/projects/$projectKey/memory": typeof ProjectsProjectKeyMemoryRoute
   "/projects/$projectKey/reviews": typeof ProjectsProjectKeyReviewsRoute
+  "/projects/$projectKey/web-audits": typeof ProjectsProjectKeyWebAuditsRoute
   "/projects/$projectKey/workspace": typeof ProjectsProjectKeyWorkspaceRoute
   "/projects/$projectKey/": typeof ProjectsProjectKeyIndexRoute
 }
@@ -94,6 +102,7 @@ export interface FileRoutesByTo {
   "/projects": typeof ProjectsIndexRoute
   "/projects/$projectKey/memory": typeof ProjectsProjectKeyMemoryRoute
   "/projects/$projectKey/reviews": typeof ProjectsProjectKeyReviewsRoute
+  "/projects/$projectKey/web-audits": typeof ProjectsProjectKeyWebAuditsRoute
   "/projects/$projectKey/workspace": typeof ProjectsProjectKeyWorkspaceRoute
   "/projects/$projectKey": typeof ProjectsProjectKeyIndexRoute
 }
@@ -107,6 +116,7 @@ export interface FileRoutesById {
   "/projects/": typeof ProjectsIndexRoute
   "/projects/$projectKey/memory": typeof ProjectsProjectKeyMemoryRoute
   "/projects/$projectKey/reviews": typeof ProjectsProjectKeyReviewsRoute
+  "/projects/$projectKey/web-audits": typeof ProjectsProjectKeyWebAuditsRoute
   "/projects/$projectKey/workspace": typeof ProjectsProjectKeyWorkspaceRoute
   "/projects/$projectKey/": typeof ProjectsProjectKeyIndexRoute
 }
@@ -121,6 +131,7 @@ export interface FileRouteTypes {
     | "/projects/"
     | "/projects/$projectKey/memory"
     | "/projects/$projectKey/reviews"
+    | "/projects/$projectKey/web-audits"
     | "/projects/$projectKey/workspace"
     | "/projects/$projectKey/"
   fileRoutesByTo: FileRoutesByTo
@@ -132,6 +143,7 @@ export interface FileRouteTypes {
     | "/projects"
     | "/projects/$projectKey/memory"
     | "/projects/$projectKey/reviews"
+    | "/projects/$projectKey/web-audits"
     | "/projects/$projectKey/workspace"
     | "/projects/$projectKey"
   id:
@@ -144,6 +156,7 @@ export interface FileRouteTypes {
     | "/projects/"
     | "/projects/$projectKey/memory"
     | "/projects/$projectKey/reviews"
+    | "/projects/$projectKey/web-audits"
     | "/projects/$projectKey/workspace"
     | "/projects/$projectKey/"
   fileRoutesById: FileRoutesById
@@ -215,6 +228,13 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof ProjectsProjectKeyWorkspaceRouteImport
       parentRoute: typeof ProjectsProjectKeyRoute
     }
+    "/projects/$projectKey/web-audits": {
+      id: "/projects/$projectKey/web-audits"
+      path: "/web-audits"
+      fullPath: "/projects/$projectKey/web-audits"
+      preLoaderRoute: typeof ProjectsProjectKeyWebAuditsRouteImport
+      parentRoute: typeof ProjectsProjectKeyRoute
+    }
     "/projects/$projectKey/reviews": {
       id: "/projects/$projectKey/reviews"
       path: "/reviews"
@@ -235,6 +255,7 @@ declare module "@tanstack/react-router" {
 interface ProjectsProjectKeyRouteChildren {
   ProjectsProjectKeyMemoryRoute: typeof ProjectsProjectKeyMemoryRoute
   ProjectsProjectKeyReviewsRoute: typeof ProjectsProjectKeyReviewsRoute
+  ProjectsProjectKeyWebAuditsRoute: typeof ProjectsProjectKeyWebAuditsRoute
   ProjectsProjectKeyWorkspaceRoute: typeof ProjectsProjectKeyWorkspaceRoute
   ProjectsProjectKeyIndexRoute: typeof ProjectsProjectKeyIndexRoute
 }
@@ -242,6 +263,7 @@ interface ProjectsProjectKeyRouteChildren {
 const ProjectsProjectKeyRouteChildren: ProjectsProjectKeyRouteChildren = {
   ProjectsProjectKeyMemoryRoute: ProjectsProjectKeyMemoryRoute,
   ProjectsProjectKeyReviewsRoute: ProjectsProjectKeyReviewsRoute,
+  ProjectsProjectKeyWebAuditsRoute: ProjectsProjectKeyWebAuditsRoute,
   ProjectsProjectKeyWorkspaceRoute: ProjectsProjectKeyWorkspaceRoute,
   ProjectsProjectKeyIndexRoute: ProjectsProjectKeyIndexRoute,
 }

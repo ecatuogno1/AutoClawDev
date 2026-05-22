@@ -1,6 +1,6 @@
 import { Router, type Request, type Response, type Router as ExpressRouter } from "express";
 import { spawn, type ChildProcess } from "node:child_process";
-import type { ChatProvider } from "@autoclawdev/types";
+import type { ChatModel, ChatProvider } from "@autoclawdev/types";
 import {
   applyPendingApproval,
   deletePendingApproval,
@@ -22,6 +22,12 @@ const activeSessions = new Map<string, ActiveSession>();
 
 router.post("/session", async (req: Request, res: Response) => {
   const { provider = "claude", projectKey, cwd, sessionId } = req.body ?? {};
+  const model =
+    typeof req.body?.model === "string" && req.body.model.trim().length > 0
+      ? (req.body.model.trim() as ChatModel)
+      : provider === "claude"
+        ? "opus"
+        : "gpt-5.4";
   if (provider !== "claude" && provider !== "codex") {
     return res.status(400).json({ error: "provider must be claude or codex" });
   }
@@ -30,6 +36,7 @@ router.post("/session", async (req: Request, res: Response) => {
     const session = await chatSessionManager.startSession({
       cwd: typeof cwd === "string" && cwd.length > 0 ? cwd : undefined,
       id: typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined,
+      model,
       projectKey: typeof projectKey === "string" && projectKey.length > 0 ? projectKey : undefined,
       provider,
     });

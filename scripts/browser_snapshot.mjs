@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, "..");
 const defaultOutputDir = join(repoRoot, "output", "playwright");
+const execFileAsync = promisify(execFile);
 
 function usage() {
   console.error(`Usage: browser_snapshot.mjs <url> [options]
@@ -22,6 +22,7 @@ Options:
   --viewport-size <wxh>     Viewport size for the browser screenshot
   --timeout <ms>            Playwright screenshot timeout (default: 30000)
   --wait-for-timeout <ms>   Extra wait before capture (default: 1500)
+  --storage-state <path>    Reuse authenticated Playwright storage state
   --full-page               Capture the full page screenshot
   --ignore-https-errors     Ignore HTTPS errors in Playwright
   --save-har                Save a HAR file alongside the screenshot
@@ -63,14 +64,17 @@ function stripHtml(html) {
     .trim();
 }
 
-function extractFirstMatch(html, pattern) {
-  const match = String(html).match(pattern);
-  return match?.[1]?.trim() || "";
-}
-
 function toNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseViewport(value) {
+  const [widthText, heightText] = String(value || "").split(/[x,]/i);
+  return {
+    width: toNumber(widthText, 1440),
+    height: toNumber(heightText, 900),
+  };
 }
 
 function parseArgs(argv) {
@@ -82,6 +86,7 @@ function parseArgs(argv) {
     viewportSize: "1440,900",
     timeout: 30000,
     waitForTimeout: 1500,
+    storageState: "",
     fullPage: false,
     ignoreHttpsErrors: false,
     saveHar: false,
@@ -139,6 +144,11 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === "--storage-state" && next) {
+      args.storageState = next;
+      i += 1;
+      continue;
+    }
 
     positional.push(arg);
   }
@@ -147,57 +157,7 @@ function parseArgs(argv) {
   return args;
 }
 
-async function runPlaywrightScreenshot(url, screenshotPath, options) {
-  const cmdArgs = [
-    "playwright",
-    "screenshot",
-    "--browser",
-    options.browser,
-    "--timeout",
-    String(options.timeout),
-    "--wait-for-timeout",
-    String(options.waitForTimeout),
-    "--viewport-size",
-    options.viewportSize,
-  ];
-
-  if (options.fullPage) cmdArgs.push("--full-page");
-  if (options.ignoreHttpsErrors) cmdArgs.push("--ignore-https-errors");
-  if (options.saveHar) cmdArgs.push("--save-har", screenshotPath.replace(/\.png$/i, ".har"));
-
-  cmdArgs.push(url, screenshotPath);
-
-  const env = {
-    ...process.env,
-    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD || "0",
-  };
-
-  await execFileAsync("npx", ["--yes", ...cmdArgs], {
-    cwd: repoRoot,
-    env,
-    maxBuffer: 10 * 1024 * 1024,
-  });
-}
-
-async function fetchPageHtml(url) {
-  const response = await fetch(url, {
-    redirect: "follow",
-    headers: {
-      "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
-      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    },
-  });
-
-  const html = await response.text();
-  return {
-    finalUrl: response.url,
-    status: response.status,
-    ok: response.ok,
-    html,
-  };
-}
-
-function assessPage({ title, text, html, status, screenshotStat, finalUrl }) {
+function assessPage({ title, text, html, status, finalUrl, screenshotOk }) {
   const lowerText = `${title}\n${text}\n${html}`.toLowerCase();
   const issues = [];
   let score = 100;
@@ -224,7 +184,6 @@ function assessPage({ title, text, html, status, screenshotStat, finalUrl }) {
     "stack trace",
     "failed to load",
   ];
-
   const hitSignals = errorSignals.filter((signal) => lowerText.includes(signal));
   if (hitSignals.length > 0) {
     issues.push(`Error signals found: ${hitSignals.join(", ")}`);
@@ -236,7 +195,7 @@ function assessPage({ title, text, html, status, screenshotStat, finalUrl }) {
     score -= 35;
   }
 
-  if (!screenshotStat || screenshotStat.size === 0) {
+  if (!screenshotOk) {
     issues.push("Screenshot file missing or empty");
     score -= 30;
   }
@@ -247,13 +206,7 @@ function assessPage({ title, text, html, status, screenshotStat, finalUrl }) {
   }
 
   score = Math.max(0, Math.min(100, score));
-
-  const statusLabel = score >= 80 && issues.length === 0
-    ? "pass"
-    : score >= 50
-      ? "concern"
-      : "fail";
-
+  const statusLabel = score >= 80 && issues.length === 0 ? "pass" : score >= 50 ? "concern" : "fail";
   return { score, status: statusLabel, issues };
 }
 
@@ -276,46 +229,130 @@ async function main() {
   const jsonPath = join(args.outputDir, `${artifactBase}.json`);
   const harPath = args.saveHar ? screenshotPath.replace(/\.png$/i, ".har") : null;
 
+  const observedRequests = [];
   let captureError = "";
+  let html = "";
+  let title = "";
+  let visibleText = "";
+  let finalUrl = url;
+  let httpStatus = 0;
+  let screenshotOk = false;
+
+  let playwright = null;
   try {
-    await runPlaywrightScreenshot(url, screenshotPath, args);
-  } catch (error) {
-    captureError = error instanceof Error ? error.message : String(error);
+    playwright = await import("playwright");
+  } catch {
+    playwright = null;
   }
 
-  let fetched = {
-    finalUrl: url,
-    status: 0,
-    ok: false,
-    html: "",
-  };
-  let fetchError = "";
-  try {
-    fetched = await fetchPageHtml(url);
-    await writeFile(htmlPath, fetched.html, "utf8");
-  } catch (error) {
-    fetchError = error instanceof Error ? error.message : String(error);
+  if (playwright) {
+    const browserFactory = {
+      chromium: playwright.chromium,
+      firefox: playwright.firefox,
+      webkit: playwright.webkit,
+    }[args.browser] || playwright.chromium;
+
+    let browser;
+    let context;
+    let page;
+    try {
+      browser = await browserFactory.launch({ headless: true });
+      const viewport = parseViewport(args.viewportSize);
+      context = await browser.newContext({
+        ignoreHTTPSErrors: args.ignoreHttpsErrors,
+        viewport,
+        storageState: args.storageState || undefined,
+        recordHar: args.saveHar
+          ? {
+              path: harPath,
+              mode: "minimal",
+              content: "embed",
+            }
+          : undefined,
+      });
+      page = await context.newPage();
+      page.on("request", (request) => {
+        observedRequests.push({
+          url: request.url(),
+          method: request.method(),
+          resourceType: request.resourceType(),
+        });
+      });
+      const response = await page.goto(url, {
+        timeout: args.timeout,
+        waitUntil: "domcontentloaded",
+      });
+      await page.waitForTimeout(args.waitForTimeout);
+      await page.screenshot({ path: screenshotPath, fullPage: args.fullPage });
+      html = await page.content();
+      title = await page.title();
+      visibleText = stripHtml(html).slice(0, 4000);
+      finalUrl = page.url();
+      httpStatus = response?.status() || 0;
+      screenshotOk = true;
+      await writeFile(htmlPath, html, "utf8");
+    } catch (error) {
+      captureError = error instanceof Error ? error.message : String(error);
+    } finally {
+      await context?.close().catch(() => {});
+      await browser?.close().catch(() => {});
+    }
+  } else if (!args.storageState) {
+    const cmdArgs = [
+      "playwright",
+      "screenshot",
+      "--browser",
+      args.browser,
+      "--timeout",
+      String(args.timeout),
+      "--wait-for-timeout",
+      String(args.waitForTimeout),
+      "--viewport-size",
+      args.viewportSize,
+    ];
+    if (args.fullPage) cmdArgs.push("--full-page");
+    if (args.ignoreHttpsErrors) cmdArgs.push("--ignore-https-errors");
+    if (args.saveHar && harPath) cmdArgs.push("--save-har", harPath);
+    cmdArgs.push(url, screenshotPath);
+    try {
+      await execFileAsync("npx", ["--yes", ...cmdArgs], {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD || "0",
+        },
+        maxBuffer: 10 * 1024 * 1024,
+      });
+      screenshotOk = true;
+      const response = await fetch(url, {
+        redirect: "follow",
+        headers: {
+          "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+          accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        },
+      });
+      html = await response.text();
+      finalUrl = response.url;
+      httpStatus = response.status;
+      visibleText = stripHtml(html).slice(0, 4000);
+      await writeFile(htmlPath, html, "utf8");
+    } catch (error) {
+      captureError = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    captureError = "Authenticated browser replay requires the playwright package to be available locally.";
   }
 
-  const title = extractFirstMatch(fetched.html, /<title[^>]*>([\s\S]*?)<\/title>/i)
-    || extractFirstMatch(fetched.html, /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
-    || extractFirstMatch(fetched.html, /<h1[^>]*>([\s\S]*?)<\/h1>/i);
-  const visibleText = stripHtml(fetched.html).slice(0, 4000);
-  const screenshotStat = captureError ? null : await stat(screenshotPath).catch(() => null);
   const assessment = assessPage({
     title,
     text: visibleText,
-    html: fetched.html,
-    status: fetched.status,
-    screenshotStat,
-    finalUrl: fetched.finalUrl,
+    html,
+    status: httpStatus,
+    finalUrl,
+    screenshotOk,
   });
-
   if (captureError) {
     assessment.issues.push(`Browser capture failed: ${captureError}`);
-  }
-  if (fetchError) {
-    assessment.issues.push(`HTML fetch failed: ${fetchError}`);
   }
 
   const result = {
@@ -324,7 +361,7 @@ async function main() {
       outputDir: args.outputDir,
       jsonPath,
       screenshotPath,
-      htmlPath: fetchError ? null : htmlPath,
+      htmlPath: html ? htmlPath : null,
       harPath,
     },
     input: {
@@ -333,25 +370,21 @@ async function main() {
       viewportSize: args.viewportSize,
       timeout: args.timeout,
       waitForTimeout: args.waitForTimeout,
+      storageState: args.storageState || null,
       fullPage: args.fullPage,
       ignoreHttpsErrors: args.ignoreHttpsErrors,
       saveHar: args.saveHar,
     },
     page: {
       requestedUrl: url,
-      finalUrl: fetched.finalUrl,
+      finalUrl,
       title: title || null,
-      httpStatus: fetched.status || null,
+      httpStatus: httpStatus || null,
       visibleTextSample: visibleText,
-      contentHash: hashText(fetched.html || title || url),
+      contentHash: hashText(html || title || url),
     },
     browser: {
-      screenshot: screenshotStat
-        ? {
-            size: screenshotStat.size,
-            mtimeMs: screenshotStat.mtimeMs,
-          }
-        : null,
+      observedRequests,
     },
     assessment: {
       status: assessment.status,
@@ -360,7 +393,6 @@ async function main() {
     },
     errors: {
       capture: captureError || null,
-      fetch: fetchError || null,
     },
     createdAt: new Date().toISOString(),
   };

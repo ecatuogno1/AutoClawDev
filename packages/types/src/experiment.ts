@@ -1,4 +1,4 @@
-export type ExperimentResult = "pass" | "fail";
+export type ExperimentResult = "pass" | "degraded_pass" | "fail";
 
 export type ExperimentDomain = "backend" | "frontend" | "unknown";
 

@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ChatProvider } from "@autoclawdev/types";
+import type { ChatModel, ChatProvider } from "@autoclawdev/types";
 import type { ConversationEntry, StoredChatSession } from "./types.js";
 
 const MAX_SESSION_TURNS = 50;
@@ -18,10 +18,12 @@ class ChatSessionStore {
   private loadPromise: Promise<void> | null = null;
   private persistPromise = Promise.resolve();
   private loaded = false;
+  private lastPersistWarning: string | null = null;
 
   async createSession(props: {
     cwd: string;
     id: string;
+    model: ChatModel;
     projectKey?: string;
     provider: ChatProvider;
     systemPrompt: string;
@@ -32,6 +34,7 @@ class ChatSessionStore {
     const session: StoredChatSession = {
       id: props.id,
       provider: props.provider,
+      model: props.model,
       cwd: props.cwd,
       createdAt: now,
       lastMessageAt: now,
@@ -160,8 +163,17 @@ class ChatSessionStore {
     };
 
     this.persistPromise = this.persistPromise.then(async () => {
-      await mkdir(dirname(SESSION_STORE_PATH), { recursive: true });
-      await writeFile(SESSION_STORE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+      try {
+        await mkdir(dirname(SESSION_STORE_PATH), { recursive: true });
+        await writeFile(SESSION_STORE_PATH, JSON.stringify(payload, null, 2), "utf-8");
+        this.lastPersistWarning = null;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message !== this.lastPersistWarning) {
+          console.warn(`Chat session persistence skipped: ${message}`);
+          this.lastPersistWarning = message;
+        }
+      }
     });
 
     await this.persistPromise;
@@ -192,6 +204,7 @@ function isStoredChatSession(value: unknown): value is StoredChatSession {
   return (
     typeof session.id === "string" &&
     (session.provider === "claude" || session.provider === "codex") &&
+    typeof session.model === "string" &&
     typeof session.cwd === "string" &&
     typeof session.createdAt === "string" &&
     typeof session.lastMessageAt === "string" &&

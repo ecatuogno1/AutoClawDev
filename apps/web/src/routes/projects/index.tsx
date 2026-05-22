@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useProjects, useHealthMatrix } from "@/lib/api";
+import { useProjectsReadiness } from "@/lib/api";
 import { ProjectCard } from "@/components/ProjectCard";
 import { useMemo } from "react";
 
@@ -8,32 +8,21 @@ export const Route = createFileRoute("/projects/")({
 });
 
 function ProjectsList() {
-  const { data: projects, isLoading } = useProjects();
-  const { data: healthData } = useHealthMatrix();
-
-  const healthMap = useMemo(() => {
-    const map: Record<string, { recentTrend: string; hasMemory: boolean; lastDeepReview?: string; activeRun: boolean }> = {};
-    for (const p of healthData?.projects ?? []) {
-      map[p.key] = {
-        recentTrend: p.recentTrend,
-        hasMemory: p.hasMemory,
-        lastDeepReview: p.lastDeepReview,
-        activeRun: p.activeRun,
-      };
-    }
-    return map;
-  }, [healthData]);
+  const { data, isLoading } = useProjectsReadiness();
 
   // Sort: active runs first, then by experiment count desc
   const sorted = useMemo(() => {
-    if (!projects) return [];
-    return [...projects].sort((a, b) => {
-      const aActive = healthMap[a.key]?.activeRun ? 1 : 0;
-      const bActive = healthMap[b.key]?.activeRun ? 1 : 0;
+    if (!data?.projects) return [];
+    return [...data.projects].sort((a, b) => {
+      const aActive = a.activeRun ? 1 : 0;
+      const bActive = b.activeRun ? 1 : 0;
       if (bActive !== aActive) return bActive - aActive;
+      if (b.readinessScore !== a.readinessScore) {
+        return b.readinessScore - a.readinessScore;
+      }
       return b.stats.total - a.stats.total;
     });
-  }, [projects, healthMap]);
+  }, [data]);
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
@@ -41,8 +30,8 @@ function ProjectsList() {
         <h1 className="text-2xl font-bold text-[#e6edf3]">Projects</h1>
         <p className="text-sm text-[#8b949e] mt-1">
           {sorted.length} project{sorted.length !== 1 ? "s" : ""} registered
-          {sorted.filter((p) => healthMap[p.key]?.activeRun).length > 0 &&
-            ` — ${sorted.filter((p) => healthMap[p.key]?.activeRun).length} running`}
+          {sorted.filter((p) => p.activeRun).length > 0 &&
+            ` — ${sorted.filter((p) => p.activeRun).length} running`}
         </p>
       </div>
 
@@ -57,11 +46,20 @@ function ProjectsList() {
         </div>
       ) : sorted.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {sorted.map((p) => (
+          {sorted.map((entry) => (
             <ProjectCard
-              key={p.key}
-              project={p}
-              health={healthMap[p.key]}
+              key={entry.key}
+              project={{
+                ...entry.manifest,
+                stats: entry.stats,
+              }}
+              readiness={entry}
+              health={{
+                recentTrend: entry.stats.passRate >= 80 ? "improving" : "stable",
+                hasMemory: entry.warnings.every((warning) => warning !== "No memory cache initialized"),
+                lastDeepReview: entry.lastDeepReview,
+                activeRun: entry.activeRun,
+              }}
             />
           ))}
         </div>

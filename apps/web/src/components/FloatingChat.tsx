@@ -141,6 +141,7 @@ export function FloatingChat({
             <div className="min-h-0 flex-1">
               <Chat
                 initialProjectKey={activeProjectKey ?? undefined}
+                surface="floating"
                 onAssistantMessage={() => {
                   if (!isOpen || isMinimized) {
                     setHasUnread(true);

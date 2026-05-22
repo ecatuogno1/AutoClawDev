@@ -1,7 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import { useProjectMemory, useReviews } from "@/lib/api";
+import { useProjectMemory, useReviews, useWebAuditRuns } from "@/lib/api";
 
-type ProjectTabId = "runs" | "reviews" | "memory" | "workspace";
+export type ProjectTabId = "runs" | "reviews" | "web-audits" | "memory" | "workspace";
 
 interface ProjectTabsProps {
   projectKey: string;
@@ -13,9 +13,11 @@ const baseTabClass =
 
 export function ProjectTabs({ projectKey, activeTab }: ProjectTabsProps) {
   const { data: reviewsData } = useReviews(projectKey);
+  const { data: webAuditData } = useWebAuditRuns(projectKey);
   const { data: memory } = useProjectMemory(projectKey);
 
   const reviewCount = reviewsData?.reviews?.length ?? 0;
+  const webAuditCount = webAuditData?.runs?.length ?? 0;
   const openFindings = memory?.openFindings?.length ?? 0;
 
   return (
@@ -36,6 +38,18 @@ export function ProjectTabs({ projectKey, activeTab }: ProjectTabsProps) {
         {reviewCount > 0 && (
           <span className="ml-1.5 rounded-full bg-[#21262d] px-1.5 py-0.5 text-xs">
             {reviewCount}
+          </span>
+        )}
+      </ProjectTabLink>
+      <ProjectTabLink
+        active={activeTab === "web-audits"}
+        to="/projects/$projectKey/web-audits"
+        params={{ projectKey }}
+      >
+        Web Audit
+        {webAuditCount > 0 && (
+          <span className="ml-1.5 rounded-full bg-[#21262d] px-1.5 py-0.5 text-xs">
+            {webAuditCount}
           </span>
         )}
       </ProjectTabLink>
@@ -74,6 +88,7 @@ function ProjectTabLink({
   to:
     | "/projects/$projectKey"
     | "/projects/$projectKey/reviews"
+    | "/projects/$projectKey/web-audits"
     | "/projects/$projectKey/memory"
     | "/projects/$projectKey/workspace";
 }) {

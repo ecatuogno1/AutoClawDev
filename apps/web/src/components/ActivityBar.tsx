@@ -42,7 +42,7 @@ export default function ActivityBar(props: ActivityBarProps) {
               onClick={() => props.onSelectPanel(item.id)}
             >
               <Icon className="size-5" />
-              {item.id === "terminal" || item.id === "live"
+              {item.id === "live"
                 ? renderLiveStatus(props.activeRunCount ?? 0)
                 : null}
             </button>

@@ -1,9 +1,14 @@
 import { Router, type Request, type Response, type Router as ExpressRouter } from "express";
 import { getActiveRuns, readRecentRunEvents, runEvents } from "../lib/process.js";
+import { requestHasValidSession } from "../lib/sessionAuth.js";
 
 const router: ExpressRouter = Router();
 
 router.get("/events", (req: Request, res: Response) => {
+  if (!requestHasValidSession(req)) {
+    res.status(401).json({ error: "Missing or invalid local session token" });
+    return;
+  }
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");

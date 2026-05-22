@@ -1,11 +1,13 @@
 import type { Server as HttpServer } from "node:http";
-import type { ChatMessage, ChatProvider, ToolCallState } from "@autoclawdev/types";
+import type { ChatMessage, ChatModel, ChatProvider, ToolCallState } from "@autoclawdev/types";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { chatSessionManager } from "./sessionManager.js";
 import type { StoredChatSession } from "./types.js";
+import { requestHasValidSession } from "../lib/sessionAuth.js";
 
 interface CreateSessionMessage {
   type: "create-session";
+  model?: ChatModel;
   provider?: ChatProvider;
   projectKey?: string;
   cwd?: string;
@@ -39,6 +41,7 @@ interface SessionHistoryMessage {
   type: "session-created" | "session-resumed";
   sessionId: string;
   provider: ChatProvider;
+  model: ChatModel;
   cwd: string;
   createdAt: string;
   lastMessageAt: string;
@@ -51,6 +54,7 @@ interface MessageStarted {
   type: "message-started";
   sessionId: string;
   provider: ChatProvider;
+  model: ChatModel;
   cwd: string;
   timestamp: string;
   messageCount: number;
@@ -130,6 +134,10 @@ function isChatProvider(value: unknown): value is ChatProvider {
   return value === "claude" || value === "codex";
 }
 
+function defaultModelForProvider(provider: ChatProvider): ChatModel {
+  return provider === "claude" ? "opus" : "gpt-5.4";
+}
+
 function serializeHistory(session: StoredChatSession): ChatMessage[] {
   return session.messages
     .filter((message) => message.role !== "system")
@@ -145,6 +153,10 @@ function serializeHistory(session: StoredChatSession): ChatMessage[] {
 
 async function handleCreateSession(ws: WebSocket, message: CreateSessionMessage) {
   const provider = isChatProvider(message.provider) ? message.provider : "claude";
+  const model =
+    typeof message.model === "string" && message.model.trim().length > 0
+      ? message.model.trim()
+      : defaultModelForProvider(provider);
   const session = await chatSessionManager.startSession({
     cwd: typeof message.cwd === "string" && message.cwd.length > 0 ? message.cwd : undefined,
     id:
@@ -155,6 +167,7 @@ async function handleCreateSession(ws: WebSocket, message: CreateSessionMessage)
       typeof message.projectKey === "string" && message.projectKey.length > 0
         ? message.projectKey
         : undefined,
+    model,
     provider,
   });
 
@@ -162,6 +175,7 @@ async function handleCreateSession(ws: WebSocket, message: CreateSessionMessage)
     type: "session-created",
     sessionId: session.id,
     provider: session.provider,
+    model: session.model,
     cwd: session.cwd,
     createdAt: session.createdAt,
     lastMessageAt: session.lastMessageAt,
@@ -191,6 +205,7 @@ async function handleResumeSession(ws: WebSocket, message: ResumeSessionMessage)
     type: "session-resumed",
     sessionId: session.id,
     provider: session.provider,
+    model: session.model,
     cwd: session.cwd,
     createdAt: session.createdAt,
     lastMessageAt: session.lastMessageAt,
@@ -224,6 +239,7 @@ async function handleSendMessage(ws: WebSocket, message: SendMessageMessage) {
     type: "message-started",
     sessionId: session.id,
     provider: session.provider,
+    model: session.model,
     cwd: session.cwd,
     timestamp: new Date().toISOString(),
     messageCount: session.messageCount,
@@ -358,6 +374,12 @@ export function attachChatWebSocketServer(server: HttpServer) {
   server.on("upgrade", (request, socket, head) => {
     const pathname = request.url ? new URL(request.url, "http://localhost").pathname : "";
     if (pathname !== "/ws/chat") {
+      return;
+    }
+
+    if (!requestHasValidSession(request)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
       return;
     }
 

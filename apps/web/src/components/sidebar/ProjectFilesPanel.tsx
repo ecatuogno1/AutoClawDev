@@ -1,16 +1,37 @@
-import { useState } from "react";
-import { Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { FileTree } from "@/components/workspace/FileTree";
 import { useProject } from "@/lib/api";
+import {
+  getComposerReferenceFile,
+  openFilePane,
+  useComposerWorkspace,
+} from "@/lib/workspaceShell";
 
 interface ProjectFilesPanelProps {
   projectKey: string | null;
 }
 
 export function ProjectFilesPanel({ projectKey }: ProjectFilesPanelProps) {
+  const navigate = useNavigate();
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
-  const [activeFile, setActiveFile] = useState<string | null>(null);
+  const shell = useComposerWorkspace(projectKey ?? "__no-project__");
+  const activeFile = projectKey ? getComposerReferenceFile(shell.state) : null;
   const { data: project } = useProject(projectKey ?? "", Boolean(projectKey));
+
+  useEffect(() => {
+    if (!activeFile) {
+      return;
+    }
+
+    setExpandedDirs((current) => {
+      const next = new Set(current);
+      for (const segment of expandSegments(activeFile)) {
+        next.add(segment);
+      }
+      return next;
+    });
+  }, [activeFile]);
 
   if (!projectKey) {
     return (
@@ -36,7 +57,21 @@ export function ProjectFilesPanel({ projectKey }: ProjectFilesPanelProps) {
           projectKey={projectKey}
           activeFile={activeFile}
           expandedDirs={expandedDirs}
-          onSelectFile={setActiveFile}
+          showHeader={false}
+          onSelectFile={(path) => {
+            openFilePane(projectKey, path);
+            setExpandedDirs((current) => {
+              const next = new Set(current);
+              for (const segment of expandSegments(path)) {
+                next.add(segment);
+              }
+              return next;
+            });
+            navigate({
+              to: "/projects/$projectKey/workspace",
+              params: { projectKey },
+            });
+          }}
           onToggleDir={(path) => {
             setExpandedDirs((current) => {
               const next = new Set(current);
@@ -62,4 +97,15 @@ export function ProjectFilesPanel({ projectKey }: ProjectFilesPanelProps) {
       </div>
     </div>
   );
+}
+
+function expandSegments(path: string) {
+  const segments = path.split("/");
+  const expanded: string[] = [];
+
+  for (let index = 1; index < segments.length; index += 1) {
+    expanded.push(segments.slice(0, index).join("/"));
+  }
+
+  return expanded;
 }

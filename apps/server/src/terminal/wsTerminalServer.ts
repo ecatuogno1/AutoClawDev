@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { basename } from "node:path";
 import { WebSocket, WebSocketServer, type RawData } from "ws";
 import { getProject } from "../lib/config.js";
+import { requestHasValidSession } from "../lib/sessionAuth.js";
 
 const MAX_HISTORY_BYTES = 512 * 1024;
 const RECONNECT_GRACE_MS = 2 * 60 * 1000;
@@ -465,6 +466,12 @@ export function attachTerminalWebSocketServer(server: HttpServer) {
   server.on("upgrade", (request, socket, head) => {
     const pathname = request.url ? new URL(request.url, "http://localhost").pathname : "";
     if (pathname !== "/ws/terminal") {
+      return;
+    }
+
+    if (!requestHasValidSession(request)) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+      socket.destroy();
       return;
     }
 

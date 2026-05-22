@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import {
-  BrainCircuitIcon,
   FlaskConicalIcon,
-  HouseIcon,
   LayoutGridIcon,
-  PanelsTopLeftIcon,
-  SearchCodeIcon,
   SettingsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
@@ -14,22 +10,10 @@ import { cn } from "@/lib/cn";
 import {
   deriveLayoutNavState,
   type GlobalSectionId,
-  type ProjectSectionId,
 } from "@/components/layoutNavigation";
 
 const sectionTabClassName =
   "inline-flex h-9 shrink-0 items-center gap-2 border-b-2 px-3 text-sm transition-[border-color,color,background-color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#58a6ff]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0d1117]";
-
-const PROJECT_SECTIONS: Array<{
-  icon: typeof HouseIcon;
-  id: ProjectSectionId;
-  label: string;
-}> = [
-  { id: "home", label: "Home", icon: HouseIcon },
-  { id: "reviews", label: "Code Review", icon: SearchCodeIcon },
-  { id: "memory", label: "Knowledge Base", icon: BrainCircuitIcon },
-  { id: "workspace", label: "Workspace", icon: PanelsTopLeftIcon },
-];
 
 const GLOBAL_SECTIONS: Array<{
   icon: typeof LayoutGridIcon;
@@ -37,48 +21,21 @@ const GLOBAL_SECTIONS: Array<{
   label: string;
 }> = [
   { id: "command-center", label: "Command Center", icon: LayoutGridIcon },
-  { id: "experiments", label: "Experiments", icon: FlaskConicalIcon },
+  { id: "experiments", label: "History", icon: FlaskConicalIcon },
   { id: "live", label: "Live", icon: SquareTerminalIcon },
   { id: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export function SectionTabBar({
   currentPath,
-  projectKey,
 }: {
   currentPath: string;
-  projectKey: string | null;
 }) {
   const navigate = useNavigate();
   const navState = deriveLayoutNavState(currentPath);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const tabs = projectKey ? PROJECT_SECTIONS : GLOBAL_SECTIONS;
-
-  const navigateToTab = useCallback((tabId: GlobalSectionId | ProjectSectionId) => {
-    if (projectKey) {
-      switch (tabId) {
-        case "reviews":
-          return navigate({
-            to: "/projects/$projectKey/reviews",
-            params: { projectKey },
-          });
-        case "memory":
-          return navigate({
-            to: "/projects/$projectKey/memory",
-            params: { projectKey },
-          });
-        case "workspace":
-          return navigate({
-            to: "/projects/$projectKey/workspace",
-            params: { projectKey },
-          });
-        case "home":
-        default:
-          return navigate({ to: "/projects/$projectKey", params: { projectKey } });
-      }
-    }
-
+  const navigateToTab = useCallback((tabId: GlobalSectionId) => {
     switch (tabId) {
       case "experiments":
         return navigate({ to: "/experiments" });
@@ -90,7 +47,7 @@ export function SectionTabBar({
       default:
         return navigate({ to: "/" });
     }
-  }, [navigate, projectKey]);
+  }, [navigate]);
 
   useEffect(() => {
     const activeTab = scrollContainerRef.current?.querySelector<HTMLElement>(
@@ -101,11 +58,7 @@ export function SectionTabBar({
       block: "nearest",
       inline: "nearest",
     });
-  }, [
-    navState.activeGlobalSection,
-    navState.activeProjectSection,
-    navState.isProjectRoute,
-  ]);
+  }, [navState.activeGlobalSection]);
 
   return (
     <div className="flex min-h-10 items-center border-b border-[#30363d]/80 bg-[linear-gradient(180deg,rgba(13,17,23,0.98)_0%,rgba(13,17,23,0.95)_100%)] px-3 shadow-[inset_0_-1px_0_rgba(48,54,61,0.35)]">
@@ -113,11 +66,9 @@ export function SectionTabBar({
         ref={scrollContainerRef}
         className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
-        {tabs.map((tab) => {
+        {GLOBAL_SECTIONS.map((tab) => {
           const Icon = tab.icon;
-          const isActive = projectKey
-            ? navState.activeProjectSection === tab.id
-            : navState.activeGlobalSection === tab.id;
+          const isActive = navState.activeGlobalSection === tab.id;
 
           return (
             <button

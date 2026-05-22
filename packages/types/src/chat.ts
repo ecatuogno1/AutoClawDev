@@ -1,4 +1,5 @@
 export type ChatProvider = "claude" | "codex";
+export type ChatModel = string;
 
 export type ToolCallKind =
   | "file-read"

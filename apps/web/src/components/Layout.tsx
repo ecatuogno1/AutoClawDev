@@ -11,7 +11,6 @@ import {
 } from "@/components/activityPanels";
 import {
   deriveLayoutNavState,
-  storeProjectSection,
 } from "@/components/layoutNavigation";
 import { ProjectTabBar } from "@/components/ProjectTabBar";
 import { SectionTabBar } from "@/components/SectionTabBar";
@@ -23,8 +22,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const currentPath = routerState.location.pathname;
   const projectKey = currentPath.match(/^\/projects\/([^/]+)/)?.[1] ?? null;
   const activeProjectKey = projectKey ? decodeURIComponent(projectKey) : null;
-  const navState = deriveLayoutNavState(currentPath);
-  const settingsActive = navState.activeGlobalSection === "settings";
+  const { activeGlobalSection } = deriveLayoutNavState(currentPath);
+  const settingsActive = activeGlobalSection === "settings";
   const { data: activeRuns } = useActiveRuns();
   const activeRunCount = activeProjectKey
     ? activeRuns?.[activeProjectKey]
@@ -36,12 +35,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [activePanel, setActivePanel] = useState<ActivityPanelId | null>(() =>
     getDefaultActivityPanelId(activeProjectKey),
   );
-
-  useEffect(() => {
-    if (navState.activeProjectKey && navState.activeProjectSection) {
-      storeProjectSection(navState.activeProjectKey, navState.activeProjectSection);
-    }
-  }, [navState.activeProjectKey, navState.activeProjectSection]);
 
   useEffect(() => {
     setActivePanel((current) => {
@@ -83,7 +76,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
         />
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           <ProjectTabBar projectKey={activeProjectKey} />
-          <SectionTabBar currentPath={currentPath} projectKey={activeProjectKey} />
+          {!activeProjectKey ? (
+            <SectionTabBar currentPath={currentPath} />
+          ) : null}
           <main className="min-h-0 flex-1 overflow-auto bg-[#0d1117] [scrollbar-gutter:stable]">
             {children}
           </main>

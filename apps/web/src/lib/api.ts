@@ -4,17 +4,25 @@ import type {
   ActiveRun,
   DeepReviewDetail,
   DeepReviewSession,
-  Experiment,
+  EventRecord,
+  PreflightReport,
   ProjectDetail,
+  ProjectExecutionSummary,
   ProjectHealth,
+  ProjectReadiness,
   ProjectMemory,
   ProjectWithStats,
+  RunRecord,
+  SystemHealthReport,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
   WorkspaceGitCommitResponse,
   WorkspaceGitDiffResponse,
   WorkspaceGitStageResponse,
   WorkspaceGitStatus,
+  WebAuditEvent,
+  WebAuditRunDetail,
+  WebAuditRunSummary,
 } from "@autoclawdev/types";
 import type { GithubData } from "@/types";
 
@@ -30,6 +38,7 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(`${BASE}${url}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`${res.status}: ${res.statusText}`);
@@ -67,12 +76,21 @@ export function useProject(key: string, enabled = true) {
   });
 }
 
-export function useProjectExperiments(key: string, enabled = true) {
-  return useQuery<Experiment[]>({
-    queryKey: ["experiments", key],
-    queryFn: () => fetchJSON(`/projects/${key}/experiments`),
+export function useProjectHistory(key: string, enabled = true) {
+  return useQuery<{ runs: RunRecord[] }>({
+    queryKey: ["history", key],
+    queryFn: () => fetchJSON(`/projects/${key}/history`),
     enabled: enabled && Boolean(key),
     refetchInterval: 15000,
+  });
+}
+
+export function useProjectExecutions(key: string, enabled = true) {
+  return useQuery<ProjectExecutionSummary>({
+    queryKey: ["project-executions", key],
+    queryFn: () => fetchJSON(`/projects/${key}/executions`),
+    enabled: enabled && Boolean(key),
+    refetchInterval: 5000,
   });
 }
 
@@ -86,11 +104,10 @@ export function useGithub(key: string, enabled = true) {
   });
 }
 
-// All experiments
-export function useAllExperiments() {
-  return useQuery<Experiment[]>({
-    queryKey: ["allExperiments"],
-    queryFn: () => fetchJSON("/experiments"),
+export function useAllHistory() {
+  return useQuery<{ active: ActiveRun[]; runs: RunRecord[] }>({
+    queryKey: ["allHistory"],
+    queryFn: () => fetchJSON("/runs"),
     refetchInterval: 15000,
   });
 }
@@ -100,7 +117,8 @@ export function useActiveRuns() {
   return useQuery<Record<string, ActiveRun>>({
     queryKey: ["activeRuns"],
     queryFn: async () => {
-      const runs: ActiveRun[] = await fetchJSON("/active");
+      const payload: { active: ActiveRun[] } = await fetchJSON("/runs");
+      const runs = payload.active;
       const map: Record<string, ActiveRun> = {};
       for (const run of runs) map[run.project] = run;
       return map;
@@ -113,10 +131,22 @@ export function useActiveRuns() {
 export function useStartRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (params: { project: string; cycles: number }) =>
-      postJSON("/run", params),
+    mutationFn: (params: {
+      project: string;
+      cycles?: number;
+      mode?: "run" | "review" | "build" | "audit";
+      target?: string;
+      auditMode?: "triage" | "deep";
+      ownedTarget?: boolean;
+      authorizationNote?: string;
+    }) =>
+      postJSON("/runs", params),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["activeRuns"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["reviews"] });
+      qc.invalidateQueries({ queryKey: ["web-audits"] });
+      qc.invalidateQueries({ queryKey: ["project-executions"] });
     },
   });
 }
@@ -127,7 +157,83 @@ export function useStopRun() {
     mutationFn: (params: { project: string }) => postJSON("/stop", params),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["activeRuns"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["project-executions"] });
     },
+  });
+}
+
+export function useResumeRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { runId: string; approveGates?: string[] }) =>
+      postJSON<{ ok: boolean; record?: RunRecord; reason?: string }>(
+        `/runs/${params.runId}/resume`,
+        { approveGates: params.approveGates ?? [] },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["activeRuns"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["reviews"] });
+      qc.invalidateQueries({ queryKey: ["web-audits"] });
+      qc.invalidateQueries({ queryKey: ["project-executions"] });
+    },
+  });
+}
+
+export function useApproveRunGate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { runId: string; gate: string; approver?: string; note?: string }) =>
+      postJSON<{ run: RunRecord }>(`/runs/${params.runId}/approve`, {
+        gate: params.gate,
+        approver: params.approver,
+        note: params.note,
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["activeRuns"] });
+      qc.invalidateQueries({ queryKey: ["runs"] });
+      qc.invalidateQueries({ queryKey: ["reviews"] });
+      qc.invalidateQueries({ queryKey: ["web-audits"] });
+      qc.invalidateQueries({ queryKey: ["project-executions"] });
+    },
+  });
+}
+
+export function useRuns() {
+  return useQuery<{ active: ActiveRun[]; runs: RunRecord[] }>({
+    queryKey: ["runs"],
+    queryFn: () => fetchJSON("/runs"),
+    refetchInterval: 5000,
+  });
+}
+
+export function useRunRecoveryAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (params: { runId: string; action: "resolve" | "abandon"; note?: string }) =>
+      postJSON<{ run: RunRecord }>(`/runs/${params.runId}/recovery`, {
+        action: params.action,
+        note: params.note,
+      }),
+    onSuccess: async (_payload, variables) => {
+      await qc.invalidateQueries({ queryKey: ["runs"] });
+      await qc.invalidateQueries({ queryKey: ["allHistory"] });
+      await qc.invalidateQueries({ queryKey: ["history"] });
+      await qc.invalidateQueries({ queryKey: ["history", variables.runId] });
+      await qc.invalidateQueries({ queryKey: ["projects-readiness"] });
+      await qc.invalidateQueries({ queryKey: ["healthMatrix"] });
+      await qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+}
+
+export function useRunEvents(runId?: string | null, enabled = true) {
+  return useQuery<{ events: EventRecord[] }>({
+    queryKey: ["run-events", runId ?? null],
+    queryFn: () => fetchJSON(`/runs/${runId}/events`),
+    enabled: enabled && Boolean(runId),
+    refetchInterval: 3000,
   });
 }
 
@@ -137,6 +243,31 @@ export function useHealthMatrix() {
     queryKey: ["healthMatrix"],
     queryFn: () => fetchJSON("/health-matrix"),
     refetchInterval: 30000,
+  });
+}
+
+export function useSystemHealth() {
+  return useQuery<SystemHealthReport>({
+    queryKey: ["system-health"],
+    queryFn: () => fetchJSON("/system/health"),
+    refetchInterval: 30000,
+  });
+}
+
+export function useProjectsReadiness() {
+  return useQuery<{ generatedAt: string; projects: ProjectReadiness[] }>({
+    queryKey: ["projects-readiness"],
+    queryFn: () => fetchJSON("/system/projects-readiness"),
+    refetchInterval: 30000,
+  });
+}
+
+export function useProjectPreflight(key: string, enabled = true) {
+  return useQuery<PreflightReport>({
+    queryKey: ["project-preflight", key],
+    queryFn: () => fetchJSON(`/projects/${key}/preflight`),
+    enabled: enabled && Boolean(key),
+    staleTime: 10000,
   });
 }
 
@@ -156,6 +287,47 @@ export function useLatestReview(key: string, enabled = true) {
     queryFn: () => fetchJSON(`/reviews/${key}/reviews/latest`),
     enabled: enabled && Boolean(key),
     retry: false,
+    refetchInterval: (query) => {
+      const status = query.state.data?.managedRun?.status;
+      return status === "running" || status === "queued" ? 5000 : 30000;
+    },
+  });
+}
+
+export function useWebAuditRuns(key: string, enabled = true) {
+  return useQuery<{ runs: WebAuditRunSummary[] }>({
+    queryKey: ["web-audits", key],
+    queryFn: () => fetchJSON(`/web-audits/${key}/runs`),
+    enabled: enabled && Boolean(key),
+    refetchInterval: 10000,
+  });
+}
+
+export function useLatestWebAudit(key: string, enabled = true) {
+  return useQuery<WebAuditRunDetail>({
+    queryKey: ["web-audits", key, "latest"],
+    queryFn: () => fetchJSON(`/web-audits/${key}/runs/latest`),
+    enabled: enabled && Boolean(key),
+    retry: false,
+    refetchInterval: 10000,
+  });
+}
+
+export function useWebAuditRun(key: string, runId?: string | null, enabled = true) {
+  return useQuery<WebAuditRunDetail>({
+    queryKey: ["web-audits", key, runId ?? null],
+    queryFn: () => fetchJSON(`/web-audits/${key}/runs/${runId}`),
+    enabled: enabled && Boolean(key) && Boolean(runId),
+    refetchInterval: 10000,
+  });
+}
+
+export function useWebAuditEvents(key: string, runId?: string | null, enabled = true) {
+  return useQuery<{ events: WebAuditEvent[] }>({
+    queryKey: ["web-audits", key, runId ?? null, "events"],
+    queryFn: () => fetchJSON(`/web-audits/${key}/runs/${runId}/events`),
+    enabled: enabled && Boolean(key) && Boolean(runId),
+    refetchInterval: 5000,
   });
 }
 

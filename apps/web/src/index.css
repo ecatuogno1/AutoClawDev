@@ -16,6 +16,21 @@
   --color-accent-purple: #bc8cff;
   --color-accent-blue: #388bfd;
   --color-sidebar: #010409;
+  --color-composer-frame: rgba(10, 10, 12, 0.96);
+  --color-composer-surface: rgba(255, 255, 255, 0.03);
+  --color-composer-footer: rgba(255, 255, 255, 0.04);
+  --color-composer-segment: rgba(255, 255, 255, 0.05);
+  --color-composer-muted: rgba(255, 255, 255, 0.06);
+  --color-composer-border: rgba(255, 255, 255, 0.08);
+  --color-composer-border-soft: rgba(255, 255, 255, 0.06);
+  --color-composer-ring: rgba(116, 113, 255, 0.45);
+  --color-composer-accent: rgba(255, 255, 255, 0.06);
+  --color-composer-primary: #7471ff;
+  --color-composer-primary-hover: #6b68f5;
+  --color-composer-primary-foreground: #ffffff;
+  --color-composer-foreground: #f5f5f7;
+  --color-composer-muted-foreground: rgba(245, 245, 247, 0.64);
+  --radius-composer: 24px;
 }
 
 * {

@@ -1,8 +1,9 @@
 import { Link } from "@tanstack/react-router";
-import type { ProjectWithStats } from "@autoclawdev/types";
+import type { ProjectReadiness, ProjectWithStats } from "@autoclawdev/types";
 
 interface ProjectCardProps {
   project: ProjectWithStats;
+  readiness?: ProjectReadiness;
   health?: {
     recentTrend: string;
     hasMemory: boolean;
@@ -45,10 +46,14 @@ function timeAgo(dateStr: string): string {
   return `${Math.floor(days / 7)}w ago`;
 }
 
-export function ProjectCard({ project, health }: ProjectCardProps) {
+export function ProjectCard({ project, health, readiness }: ProjectCardProps) {
   const { stats } = project;
   const trend = trendLabel(health?.recentTrend || "unknown");
-  const lastExp = stats.lastExperiment;
+  const lastRun = stats.lastRun;
+  const readinessScore = readiness?.readinessScore;
+  const blockers = readiness?.blockers.length ?? 0;
+  const warnings = readiness?.warnings.length ?? 0;
+  const recoveryCount = readiness?.stats.recoveryRequired ?? 0;
 
   return (
     <Link
@@ -104,6 +109,11 @@ export function ProjectCard({ project, health }: ProjectCardProps) {
 
       {/* Feature indicators */}
       <div className="flex gap-2 px-5 pb-3">
+        {typeof readinessScore === "number" && (
+          <span className="text-xs bg-[#d2992215] text-[#d29922] px-2 py-0.5 rounded-full" title="Readiness score">
+            Ready {readinessScore}
+          </span>
+        )}
         {health?.hasMemory && (
           <span className="text-xs bg-[#1f6feb15] text-[#58a6ff] px-2 py-0.5 rounded-full" title="Knowledge base active">
             Memory
@@ -124,21 +134,42 @@ export function ProjectCard({ project, health }: ProjectCardProps) {
             Running
           </span>
         )}
+        {blockers > 0 && (
+          <span className="text-xs bg-[#f8514915] text-[#f85149] px-2 py-0.5 rounded-full">
+            {blockers} blocker{blockers === 1 ? "" : "s"}
+          </span>
+        )}
+        {warnings > 0 && (
+          <span className="text-xs bg-[#d2992215] text-[#d29922] px-2 py-0.5 rounded-full">
+            {warnings} warning{warnings === 1 ? "" : "s"}
+          </span>
+        )}
+        {recoveryCount > 0 && (
+          <span className="text-xs bg-[#f8514915] text-[#f85149] px-2 py-0.5 rounded-full font-medium">
+            {recoveryCount} recovery
+          </span>
+        )}
       </div>
 
-      {/* Last experiment */}
-      {lastExp && (
+      {/* Last run */}
+      {lastRun && (
         <div className="px-5 py-3 border-t border-[#30363d] bg-[#0d111780]">
           <div className="flex items-center gap-2">
             <span
-              className={`w-1.5 h-1.5 rounded-full shrink-0 ${lastExp.result === "pass" ? "bg-[#3fb950]" : "bg-[#f85149]"}`}
+              className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                lastRun.outcome === "clean_pass"
+                  ? "bg-[#3fb950]"
+                  : lastRun.outcome === "degraded_pass"
+                    ? "bg-[#d29922]"
+                    : "bg-[#f85149]"
+              }`}
             />
             <span className="text-xs text-[#c9d1d9] truncate flex-1">
-              {lastExp.description}
+              {lastRun.summary || `${lastRun.mode} run`}
             </span>
-            {lastExp.timestamp && (
+            {lastRun.createdAt && (
               <span className="text-xs text-[#484f58] shrink-0">
-                {timeAgo(lastExp.timestamp)}
+                {timeAgo(lastRun.createdAt)}
               </span>
             )}
           </div>

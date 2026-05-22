@@ -72,6 +72,9 @@ CODERABBIT_MAX_ROUNDS="${AUTOCLAWDEV_CODERABBIT_MAX_ROUNDS:-3}"
 VALIDATION_FIX_ATTEMPTS="${AUTOCLAWDEV_VALIDATION_FIX_ATTEMPTS:-2}"
 CAPTURE_VALIDATION_BASELINE="${AUTOCLAWDEV_CAPTURE_VALIDATION_BASELINE:-1}"
 CYCLE_COOLDOWN_SECONDS="${AUTOCLAWDEV_CYCLE_COOLDOWN_SECONDS:-0}"
+ALLOWED_OVERRIDE_REASONS="${AUTOCLAWDEV_ALLOWED_OVERRIDE_REASONS:-baseline_match,environment_issue,broad_repo_failure,preexisting_unrelated_failure}"
+NATIVE_FINALIZATION="${AUTOCLAWDEV_NATIVE_FINALIZATION:-0}"
+FINALIZATION_DIR="${AUTOCLAWDEV_FINALIZATION_DIR:-}"
 SKIP_PENNY_ON_CLEAN_CODERABBIT="${AUTOCLAWDEV_SKIP_PENNY_ON_CLEAN_CODERABBIT:-}"
 # Review depth: none | validation-only | penny | full (coderabbit+penny)
 # Default is "validation-only" — tests/lint only, no CR or Penny.
@@ -124,6 +127,163 @@ sbar() {
 
 phase_detail() {
   printf "${BG_CARD}   ${FG_DD}%s${RST}${BG_CARD}%*s${RST}\n" "${1:0:$((W-5))}" 1 ""
+}
+
+emit_control_plane_event() {
+  local event_name=$1
+  shift
+  python3 - "$event_name" "$@" <<'PY'
+import json
+import sys
+
+payload = {"event": sys.argv[1]}
+for raw in sys.argv[2:]:
+    if "=" not in raw:
+        continue
+    key, value = raw.split("=", 1)
+    payload[key] = value
+print("[AUTOCLAWDEV_EVENT] " + json.dumps(payload, separators=(",", ":")))
+PY
+}
+
+override_reason_allowed() {
+  local reason=$1
+  printf '%s\n' "$ALLOWED_OVERRIDE_REASONS" | tr ',' '\n' | grep -qx "$reason"
+}
+
+native_finalization_enabled() {
+  [ "$NATIVE_FINALIZATION" = "1" ] && [ -n "$FINALIZATION_DIR" ]
+}
+
+reset_cycle_workspace_state() {
+  CURRENT_WORKTREE=""
+  CURRENT_BRANCH=""
+  REPO="${LANDING_REPO:-$SOURCE_REPO}"
+}
+
+write_native_finalization_request() {
+  local request_id=$1 action=$2
+  shift 2
+  mkdir -p "$FINALIZATION_DIR"
+  local request_path="$FINALIZATION_DIR/request-$request_id.json"
+  local temp_path="$request_path.tmp"
+  python3 - "$request_id" "$action" "$PROJECT_KEY" "$@" > "$temp_path" <<'PY'
+import json
+import sys
+
+payload = {
+    "id": sys.argv[1],
+    "action": sys.argv[2],
+    "project": sys.argv[3],
+}
+for raw in sys.argv[4:]:
+    if "=" not in raw:
+        continue
+    key, value = raw.split("=", 1)
+    lowered = value.lower()
+    if lowered == "true":
+        payload[key] = True
+    elif lowered == "false":
+        payload[key] = False
+    else:
+        payload[key] = value
+print(json.dumps(payload, separators=(",", ":")))
+PY
+  mv "$temp_path" "$request_path"
+}
+
+await_native_finalization_response() {
+  local request_id=$1
+  local response_path="$FINALIZATION_DIR/response-$request_id.json"
+  local waited=0
+  local timeout_seconds=900
+
+  while [ ! -f "$response_path" ]; do
+    sleep 0.2
+    waited=$((waited + 1))
+    if [ $waited -ge $((timeout_seconds * 5)) ]; then
+      NATIVE_FINALIZATION_OK=0
+      NATIVE_FINALIZATION_DETAIL="Timed out waiting for managed finalization response"
+      NATIVE_FINALIZATION_COMMIT_HASH=""
+      NATIVE_FINALIZATION_PRESERVED_BRANCH="$CURRENT_BRANCH"
+      NATIVE_FINALIZATION_PRESERVED_WORKTREE="$CURRENT_WORKTREE"
+      return 1
+    fi
+  done
+
+  local response
+  response=$(cat "$response_path" 2>/dev/null)
+  rm -f "$response_path"
+
+  local parsed
+  parsed=$(RESPONSE_JSON="$response" python3 - <<'PY'
+import json
+import os
+
+try:
+    payload = json.loads(os.environ.get("RESPONSE_JSON", ""))
+except Exception:
+    payload = {}
+
+print("ok=" + ("1" if payload.get("ok") else "0"))
+print("detail=" + str(payload.get("detail", "")).replace("\n", " "))
+print("commit_hash=" + str(payload.get("commitHash", "")))
+print("preserved_branch=" + str(payload.get("preservedBranch", "")))
+print("preserved_worktree=" + str(payload.get("preservedWorktree", "")))
+PY
+)
+
+  NATIVE_FINALIZATION_OK=0
+  NATIVE_FINALIZATION_DETAIL=""
+  NATIVE_FINALIZATION_COMMIT_HASH=""
+  NATIVE_FINALIZATION_PRESERVED_BRANCH=""
+  NATIVE_FINALIZATION_PRESERVED_WORKTREE=""
+  while IFS='=' read -r key value; do
+    case "$key" in
+      ok) NATIVE_FINALIZATION_OK="$value" ;;
+      detail) NATIVE_FINALIZATION_DETAIL="$value" ;;
+      commit_hash) NATIVE_FINALIZATION_COMMIT_HASH="$value" ;;
+      preserved_branch) NATIVE_FINALIZATION_PRESERVED_BRANCH="$value" ;;
+      preserved_worktree) NATIVE_FINALIZATION_PRESERVED_WORKTREE="$value" ;;
+    esac
+  done <<< "$parsed"
+
+  [ "$NATIVE_FINALIZATION_OK" = "1" ]
+}
+
+native_finalize_merge() {
+  local merge_message=$1
+  local request_id="merge-$(date +%s)-$$-$RANDOM"
+  local validation_profile
+  validation_profile=$(active_profile_validation_name)
+  write_native_finalization_request \
+    "$request_id" \
+    "merge" \
+    "mergeMessage=$merge_message" \
+    "currentBranch=$CURRENT_BRANCH" \
+    "currentWorktree=$CURRENT_WORKTREE" \
+    "sourceRepo=$SOURCE_REPO" \
+    "landingRepo=$LANDING_REPO" \
+    "integrationBranch=$INTEGRATION_BRANCH" \
+    "validationSummary=$CURRENT_VALIDATION_SUMMARY" \
+    "validationProfile=$validation_profile"
+  await_native_finalization_response "$request_id"
+}
+
+native_finalize_cleanup() {
+  local preserve=$1
+  local detail=${2:-}
+  local request_id="cleanup-$(date +%s)-$$-$RANDOM"
+  write_native_finalization_request \
+    "$request_id" \
+    "cleanup" \
+    "currentBranch=$CURRENT_BRANCH" \
+    "currentWorktree=$CURRENT_WORKTREE" \
+    "sourceRepo=$SOURCE_REPO" \
+    "landingRepo=$LANDING_REPO" \
+    "preserve=$preserve" \
+    "detail=$detail"
+  await_native_finalization_response "$request_id"
 }
 
 memory_enabled() {
@@ -790,26 +950,21 @@ active_profile_validation_skip_summary() {
   validation_phase_skip_summary "$label" "$effective_cmd"
 }
 
+normalize_config_value() {
+  local kind=$1
+  local value=${2:-}
+  if [ ! -f "$REPO_ROOT/apps/server/dist/cli/normalizeConfigValue.js" ]; then
+    if [ "${AUTOCLAWDEV_NORMALIZATION_BOOTSTRAPPED:-0}" != "1" ]; then
+      pnpm --filter @autoclawdev/types build >/dev/null
+      pnpm --filter @autoclawdev/server build >/dev/null
+      export AUTOCLAWDEV_NORMALIZATION_BOOTSTRAPPED=1
+    fi
+  fi
+  node "$REPO_ROOT/apps/server/dist/cli/normalizeConfigValue.js" --kind "$kind" --value "$value"
+}
+
 normalize_team_profile() {
-  local raw=${1:-reliability}
-  raw=$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr ' _' '--')
-  case "$raw" in
-    # Core profiles (5)
-    reliability)                    printf "reliability" ;;
-    security)                       printf "security" ;;
-    performance)                    printf "performance" ;;
-    quality)                        printf "quality" ;;
-    issues)                         printf "issues" ;;
-    # Legacy aliases → consolidated profiles
-    data-integrity|data|privacy-compliance|privacy|compliance|dependency-hygiene|dependency|dependencies|deps)
-      printf "security" ;;
-    test-hardening|tests|test|testing|frontend-quality|frontend|ui|mobile-quality|mobile|api-contract|contract|api|refactor-safety|refactor)
-      printf "quality" ;;
-    issue-burner|issue)
-      printf "issues" ;;
-    *)
-      printf "reliability" ;;
-  esac
+  normalize_config_value team "${1:-reliability}"
 }
 
 team_profile_label() {
@@ -817,22 +972,7 @@ team_profile_label() {
 }
 
 normalize_speed_profile() {
-  local raw=${1:-balanced}
-  raw=$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr ' _' '--')
-  case "$raw" in
-    fast|balanced|thorough)
-      printf "%s" "$raw"
-      ;;
-    quick|faster)
-      printf "fast"
-      ;;
-    safe|default)
-      printf "balanced"
-      ;;
-    *)
-      printf "balanced"
-      ;;
-  esac
+  normalize_config_value speed "${1:-balanced}"
 }
 
 speed_profile_label() {
@@ -840,34 +980,7 @@ speed_profile_label() {
 }
 
 normalize_workflow_type() {
-  local raw=${1:-standard}
-  raw=$(printf "%s" "$raw" | tr '[:upper:]' '[:lower:]' | tr ' _' '--')
-  case "$raw" in
-    standard|implement-only|review-only|fast-ship|batch-research|research-only|deep-review)
-      printf "%s" "$raw"
-      ;;
-    impl|implement|implementation)
-      printf "implement-only"
-      ;;
-    review|review-pass)
-      printf "review-only"
-      ;;
-    fast|fastship|ship)
-      printf "fast-ship"
-      ;;
-    batch|multi-research|batch-impl)
-      printf "batch-research"
-      ;;
-    research|findings|audit)
-      printf "research-only"
-      ;;
-    deep-review|deepreview|deep-audit|stabilize)
-      printf "deep-review"
-      ;;
-    *)
-      printf "standard"
-      ;;
-  esac
+  normalize_config_value workflow "${1:-standard}"
 }
 
 workflow_type_label() {
@@ -2439,6 +2552,28 @@ cleanup_integration_workspace() {
   LANDING_REPO=""
 }
 
+cleanup_ephemeral_merge_artifacts() {
+  local repo_path=$1
+  [ -n "$repo_path" ] || return 0
+
+  local tracked_paths=()
+  while IFS= read -r -d '' rel_path; do
+    tracked_paths+=("$rel_path")
+  done < <(git -C "$repo_path" ls-files -m -z -- '*.tsbuildinfo' 2>/dev/null)
+
+  if [ ${#tracked_paths[@]} -gt 0 ]; then
+    git -C "$repo_path" restore --source=HEAD --worktree -- "${tracked_paths[@]}" >/dev/null 2>&1 || true
+  fi
+
+  while IFS= read -r -d '' abs_path; do
+    local rel_path=${abs_path#"$repo_path"/}
+    if git -C "$repo_path" ls-files --error-unmatch "$rel_path" >/dev/null 2>&1; then
+      continue
+    fi
+    rm -f "$abs_path"
+  done < <(find "$repo_path" -type f -name '*.tsbuildinfo' -not -path '*/node_modules/*' -print0 2>/dev/null)
+}
+
 promote_cycle_branch() {
   local output_file=$(mktemp "$TMPDIR/autoresearch-cherry-pick-XXXXXX")
   local merge_message=${1:-}
@@ -2467,6 +2602,9 @@ promote_cycle_branch() {
     return 1
   fi
 
+  cleanup_ephemeral_merge_artifacts "$LANDING_REPO"
+
+  emit_control_plane_event "merge_started" "detail=Merge started for $CURRENT_BRANCH"
   if git -C "$LANDING_REPO" merge --no-ff "$CURRENT_BRANCH" -m "$merge_message" >"$output_file" 2>&1; then
     REPO="$LANDING_REPO"
     local merged_ref=""
@@ -2478,6 +2616,7 @@ promote_cycle_branch() {
     REPO="$previous_repo"
     _PROMOTE_COMMIT_HASH=$(git -C "$LANDING_REPO" rev-parse --short HEAD)
     _PROMOTE_STATUS="merged"
+    emit_control_plane_event "merge_succeeded" "commitHash=$_PROMOTE_COMMIT_HASH" "detail=Merged $CURRENT_BRANCH into $INTEGRATION_BRANCH"
     release_lock_dir "$MERGE_LOCK_DIR"
     rm -f "$output_file"
     printf "%s" "$_PROMOTE_COMMIT_HASH"
@@ -2485,6 +2624,7 @@ promote_cycle_branch() {
   fi
 
   git -C "$LANDING_REPO" merge --abort >/dev/null 2>&1 || true
+  emit_control_plane_event "merge_failed" "detail=Failed to merge $CURRENT_BRANCH into $INTEGRATION_BRANCH"
   release_lock_dir "$MERGE_LOCK_DIR"
   REPO="$previous_repo"
   cat "$output_file" >&2
@@ -4363,28 +4503,56 @@ VISUAL_NOTES: <brief assessment>"
         elif [ "$test_ok" = true ] && [ "$lint_ok" = true ] && [ "$profile_ok" = true ]; then
           gate_pass=true
         elif [ "$profile_ok" = true ] && validation_matches_baseline "$baseline" "$CURRENT_VALIDATION_SUMMARY"; then
-          validation_override_reason="Validation matched known baseline failures for this integration commit — proceeding with reviewed scoped fix"
-          validation_pass_tag="validation baseline matched"
-          phase_detail "$validation_override_reason"
-          gate_pass=true
+          if override_reason_allowed "baseline_match"; then
+            validation_override_reason="Validation matched known baseline failures for this integration commit — proceeding with reviewed scoped fix"
+            validation_pass_tag="validation baseline matched"
+            phase_detail "$validation_override_reason"
+            emit_control_plane_event "override_accepted" "reason=baseline_match" "detail=$validation_override_reason"
+            gate_pass=true
+          else
+            validation_block_reason="Validation matched known baseline failures, but override policy disallows baseline_match"
+            phase_detail "$validation_block_reason"
+            emit_control_plane_event "override_rejected" "reason=baseline_match" "detail=$validation_block_reason"
+          fi
         elif [ "$profile_ok" = false ] && profile_validation_is_blocking_failure "$active_profile_name" "$profile_output"; then
           validation_block_reason="Validation failed: $(printf "%s" "$(pretty_profile_label "$active_profile_name")" | tr '[:upper:]' '[:lower:]') command is missing or unusable in the worktree"
           phase_detail "$validation_block_reason"
         elif [ "$test_ok" = false ] && [ "$lint_ok" = true ] && [ "$profile_ok" = true ] && review_indicates_preexisting_failures "$review_out"; then
-          validation_override_reason="Validation hit pre-existing unrelated test failures — proceeding with reviewed scoped fix"
-          validation_pass_tag="validation override"
-          phase_detail "$validation_override_reason"
-          gate_pass=true
+          if override_reason_allowed "preexisting_unrelated_failure"; then
+            validation_override_reason="Validation hit pre-existing unrelated test failures — proceeding with reviewed scoped fix"
+            validation_pass_tag="validation override"
+            phase_detail "$validation_override_reason"
+            emit_control_plane_event "override_accepted" "reason=preexisting_unrelated_failure" "detail=$validation_override_reason"
+            gate_pass=true
+          else
+            validation_block_reason="Validation hit pre-existing unrelated test failures, but override policy disallows preexisting_unrelated_failure"
+            phase_detail "$validation_block_reason"
+            emit_control_plane_event "override_rejected" "reason=preexisting_unrelated_failure" "detail=$validation_block_reason"
+          fi
         elif [ "$profile_ok" = true ] && validation_output_is_environment_issue "$test_output" "$lint_output" "$profile_output"; then
-          validation_override_reason="Validation hit environment-only issues — proceeding with reviewed scoped fix"
-          validation_pass_tag="validation override"
-          phase_detail "$validation_override_reason"
-          gate_pass=true
+          if override_reason_allowed "environment_issue"; then
+            validation_override_reason="Validation hit environment-only issues — proceeding with reviewed scoped fix"
+            validation_pass_tag="validation override"
+            phase_detail "$validation_override_reason"
+            emit_control_plane_event "override_accepted" "reason=environment_issue" "detail=$validation_override_reason"
+            gate_pass=true
+          else
+            validation_block_reason="Validation hit environment-only issues, but override policy disallows environment_issue"
+            phase_detail "$validation_block_reason"
+            emit_control_plane_event "override_rejected" "reason=environment_issue" "detail=$validation_block_reason"
+          fi
         elif [ "$profile_ok" = true ] && validation_output_is_broad_repo_failure "$test_output" "$lint_output" "$profile_output"; then
-          validation_override_reason="Validation surfaced broad repo-wide failures — proceeding with reviewed scoped fix"
-          validation_pass_tag="validation override"
-          phase_detail "$validation_override_reason"
-          gate_pass=true
+          if override_reason_allowed "broad_repo_failure"; then
+            validation_override_reason="Validation surfaced broad repo-wide failures — proceeding with reviewed scoped fix"
+            validation_pass_tag="validation override"
+            phase_detail "$validation_override_reason"
+            emit_control_plane_event "override_accepted" "reason=broad_repo_failure" "detail=$validation_override_reason"
+            gate_pass=true
+          else
+            validation_block_reason="Validation surfaced broad repo-wide failures, but override policy disallows broad_repo_failure"
+            phase_detail "$validation_block_reason"
+            emit_control_plane_event "override_rejected" "reason=broad_repo_failure" "detail=$validation_block_reason"
+          fi
         elif [ $fix_attempt -lt $max_fix_attempts ]; then
           # ── Fix attempt: send errors to Codex Spark ──
           fix_attempt=$((fix_attempt + 1))
@@ -4482,34 +4650,61 @@ Summarize what changed and what verification you ran."
         if git commit -m "$commit_msg" --no-verify &>/dev/null; then
           local merge_msg="merge($exp_id): ${clean_changes}"
           [ -n "$gh_issue_num" ] && merge_msg="$merge_msg (fixes #$gh_issue_num)"
-          commit_hash=$(promote_cycle_branch "$merge_msg")
-          if [ $? -eq 0 ] && [ -n "$commit_hash" ]; then
-            REPO="$LANDING_REPO"
-            after_metrics="${_PROMOTE_METRICS_AFTER:-$baseline}"
-            result="pass"
-            passes=$((passes + 1))
-            phase_done "ok" "Merged $CURRENT_BRANCH into $INTEGRATION_BRANCH ($commit_hash)"
-          else
-            cycle_failed=true
-            PRESERVE_CURRENT_WORKTREE=1
-            STOP_AFTER_CURRENT_CYCLE=1
-            if [ "${_PROMOTE_STATUS:-failed}" = "halted" ]; then
-              : > "$HALT_FILE"
-              discard_reason="Run halted before merge due to preserved parallel failure"
-              phase_set_output "Skipped merging $CURRENT_BRANCH because the parallel run is halted"
-              phase_done "fail" "Merge halted"
+          if native_finalization_enabled; then
+            phase_detail "Delegating merge to managed control plane"
+            native_finalize_merge "$merge_msg"
+            if [ $? -eq 0 ] && [ -n "${NATIVE_FINALIZATION_COMMIT_HASH:-}" ]; then
+              commit_hash="$NATIVE_FINALIZATION_COMMIT_HASH"
+              REPO="$LANDING_REPO"
+              after_metrics=$(collect_metrics)
+              result="pass"
+              passes=$((passes + 1))
+              phase_done "ok" "${NATIVE_FINALIZATION_DETAIL:-Merged $CURRENT_BRANCH into $INTEGRATION_BRANCH ($commit_hash)}"
             else
+              cycle_failed=true
+              PRESERVE_CURRENT_WORKTREE=1
+              STOP_AFTER_CURRENT_CYCLE=1
               : > "$HALT_FILE"
-              discard_reason="Merge into integration branch failed"
-              phase_set_output "Failed to merge $CURRENT_BRANCH into $INTEGRATION_BRANCH"
+              discard_reason="${NATIVE_FINALIZATION_DETAIL:-Merge into integration branch failed}"
+              phase_set_output "${NATIVE_FINALIZATION_DETAIL:-Failed to merge $CURRENT_BRANCH into $INTEGRATION_BRANCH}"
               phase_done "fail" "Merge failed"
+              [ -n "${NATIVE_FINALIZATION_PRESERVED_BRANCH:-}" ] && CURRENT_BRANCH="$NATIVE_FINALIZATION_PRESERVED_BRANCH"
+              [ -n "${NATIVE_FINALIZATION_PRESERVED_WORKTREE:-}" ] && CURRENT_WORKTREE="$NATIVE_FINALIZATION_PRESERVED_WORKTREE"
+              [ -n "$CURRENT_BRANCH" ] && phase_detail "Preserved branch: $CURRENT_BRANCH"
+              [ -n "$CURRENT_WORKTREE" ] && phase_detail "Preserved worktree: $CURRENT_WORKTREE"
             fi
-            phase_detail "Preserved branch: $CURRENT_BRANCH"
-            phase_detail "Preserved worktree: $CURRENT_WORKTREE"
+          else
+            commit_hash=$(promote_cycle_branch "$merge_msg")
+            if [ $? -eq 0 ] && [ -n "$commit_hash" ]; then
+              REPO="$LANDING_REPO"
+              after_metrics="${_PROMOTE_METRICS_AFTER:-$baseline}"
+              result="pass"
+              passes=$((passes + 1))
+              phase_done "ok" "Merged $CURRENT_BRANCH into $INTEGRATION_BRANCH ($commit_hash)"
+            else
+              cycle_failed=true
+              PRESERVE_CURRENT_WORKTREE=1
+              STOP_AFTER_CURRENT_CYCLE=1
+              if [ "${_PROMOTE_STATUS:-failed}" = "halted" ]; then
+                : > "$HALT_FILE"
+                discard_reason="Run halted before merge due to preserved parallel failure"
+                phase_set_output "Skipped merging $CURRENT_BRANCH because the parallel run is halted"
+                phase_done "fail" "Merge halted"
+              else
+                : > "$HALT_FILE"
+                discard_reason="Merge into integration branch failed"
+                phase_set_output "Failed to merge $CURRENT_BRANCH into $INTEGRATION_BRANCH"
+                phase_done "fail" "Merge failed"
+              fi
+              phase_detail "Preserved branch: $CURRENT_BRANCH"
+              phase_detail "Preserved worktree: $CURRENT_WORKTREE"
+              emit_control_plane_event "merge_failed" "detail=$discard_reason" "branch=$CURRENT_BRANCH" "worktree=$CURRENT_WORKTREE"
+            fi
           fi
         else
           cycle_failed=true
           discard_reason="Worktree commit failed"
+          emit_control_plane_event "merge_failed" "detail=$discard_reason"
           phase_done "fail" "Commit failed"
         fi
       elif [ -n "$DRY_RUN" ]; then
@@ -4555,12 +4750,54 @@ print(json.dumps(timings))
     record_cycle_memory "$exp_id" "$result" "$target_file" "$cycle_changed_files" "$commit_hash"
 
     if [ "$result" = "pass" ]; then
-      cleanup_cycle_workspace
+      if native_finalization_enabled; then
+        release_cycle_reservation
+        if native_finalize_cleanup false "Cycle workspace cleaned up after merge"; then
+          reset_cycle_workspace_state
+        else
+          PRESERVE_CURRENT_WORKTREE=1
+          [ -n "${NATIVE_FINALIZATION_PRESERVED_BRANCH:-}" ] && CURRENT_BRANCH="$NATIVE_FINALIZATION_PRESERVED_BRANCH"
+          [ -n "${NATIVE_FINALIZATION_PRESERVED_WORKTREE:-}" ] && CURRENT_WORKTREE="$NATIVE_FINALIZATION_PRESERVED_WORKTREE"
+          emit_control_plane_event "revert_failed" "detail=${NATIVE_FINALIZATION_DETAIL:-Cycle workspace cleanup requires manual recovery}" "branch=$CURRENT_BRANCH" "worktree=$CURRENT_WORKTREE"
+          phase_detail "${NATIVE_FINALIZATION_DETAIL:-Cycle workspace cleanup requires manual recovery}"
+          [ -n "$CURRENT_BRANCH" ] && phase_detail "Preserved branch: $CURRENT_BRANCH"
+          [ -n "$CURRENT_WORKTREE" ] && phase_detail "Preserved worktree: $CURRENT_WORKTREE"
+        fi
+      else
+        cleanup_cycle_workspace
+      fi
     else
       phase_start "↩️" "Revert" "git" "rolling back..."
-      cleanup_cycle_workspace
+      local revert_status="ok"
+      local revert_summary="Cycle workspace cleaned up after failure"
+      if native_finalization_enabled; then
+        release_cycle_reservation
+        native_finalize_cleanup "$([ "$PRESERVE_CURRENT_WORKTREE" = "1" ] && printf true || printf false)" "$discard_reason"
+        if [ $? -eq 0 ]; then
+          reset_cycle_workspace_state
+        else
+          revert_status="fail"
+          revert_summary="${NATIVE_FINALIZATION_DETAIL:-$discard_reason}"
+          [ -n "${NATIVE_FINALIZATION_PRESERVED_BRANCH:-}" ] && CURRENT_BRANCH="$NATIVE_FINALIZATION_PRESERVED_BRANCH"
+          [ -n "${NATIVE_FINALIZATION_PRESERVED_WORKTREE:-}" ] && CURRENT_WORKTREE="$NATIVE_FINALIZATION_PRESERVED_WORKTREE"
+        fi
+      else
+        emit_control_plane_event "revert_started" "detail=Revert/cleanup started"
+        cleanup_cycle_workspace
+        if [ "$PRESERVE_CURRENT_WORKTREE" = "1" ]; then
+          revert_status="fail"
+          revert_summary="$discard_reason"
+        fi
+      fi
       failures=$((failures + 1))
-      phase_done "fail" "$discard_reason"
+      if [ "$revert_status" = "fail" ] || [ "$PRESERVE_CURRENT_WORKTREE" = "1" ]; then
+        emit_control_plane_event "revert_failed" "detail=$discard_reason" "branch=$CURRENT_BRANCH" "worktree=$CURRENT_WORKTREE"
+        [ -n "$CURRENT_BRANCH" ] && phase_detail "Preserved branch: $CURRENT_BRANCH"
+        [ -n "$CURRENT_WORKTREE" ] && phase_detail "Preserved worktree: $CURRENT_WORKTREE"
+      else
+        emit_control_plane_event "revert_succeeded" "detail=Cycle workspace cleaned up"
+      fi
+      phase_done "$revert_status" "$revert_summary"
     fi
     cblank
 

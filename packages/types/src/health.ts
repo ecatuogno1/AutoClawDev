@@ -2,7 +2,10 @@ export interface ProjectHealth {
   key: string;
   name: string;
   passRate: number;
-  totalExperiments: number;
+  totalRuns: number;
+  cleanPassed?: number;
+  degradedPassed?: number;
+  recoveryRequired?: number;
   recentTrend: "improving" | "declining" | "stable" | "unknown";
   lastRun?: string;
   lastDeepReview?: string;

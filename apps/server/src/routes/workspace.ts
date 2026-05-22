@@ -1,9 +1,8 @@
 import { Router, type Request, type Response, type Router as ExpressRouter } from "express";
 import { readdir, readFile, writeFile, stat, mkdir } from "node:fs/promises";
-import { basename, dirname, extname, join, relative } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { homedir } from "node:os";
 import type {
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
@@ -45,13 +44,51 @@ function getLanguage(filename: string): string {
   return map[ext] || "plaintext";
 }
 
-async function resolveProjectBasePath(projectKey: string | undefined): Promise<string> {
-  if (!projectKey) {
-    return homedir();
+type ProjectBaseResolution =
+  | { ok: true; basePath: string }
+  | { ok: false; status: number; error: string };
+
+async function resolveProjectBasePath(
+  projectKey: string | undefined,
+): Promise<ProjectBaseResolution> {
+  if (!projectKey?.trim()) {
+    return {
+      ok: false,
+      status: 400,
+      error: "project is required",
+    };
   }
 
   const project = await getProject(projectKey);
-  return project?.path || homedir();
+  if (!project?.path) {
+    return {
+      ok: false,
+      status: 404,
+      error: "Project not found",
+    };
+  }
+
+  return {
+    ok: true,
+    basePath: resolve(project.path),
+  };
+}
+
+function resolveScopedPath(basePath: string, requestedPath?: string) {
+  const resolvedBasePath = resolve(basePath);
+  const resolvedPath = requestedPath
+    ? resolve(resolvedBasePath, requestedPath)
+    : resolvedBasePath;
+  const scopedRelativePath = relative(resolvedBasePath, resolvedPath);
+
+  if (
+    scopedRelativePath === "" ||
+    (!scopedRelativePath.startsWith("..") && !isAbsolute(scopedRelativePath))
+  ) {
+    return resolvedPath;
+  }
+
+  return null;
 }
 
 function runGitCommand(args: string[], cwd: string) {
@@ -185,13 +222,13 @@ router.get("/files", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
   const dirPath = req.query.path as string | undefined;
 
-  const basePath = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
 
-  const targetDir = dirPath ? join(basePath, dirPath) : basePath;
-
-  // Security: ensure we're not escaping the project root
-  const resolved = join(targetDir);
-  if (!resolved.startsWith(basePath)) {
+  const resolved = resolveScopedPath(baseResolution.basePath, dirPath);
+  if (!resolved) {
     return res.status(403).json({ error: "Path escapes project root" });
   }
 
@@ -212,7 +249,7 @@ router.get("/files", async (req: Request, res: Response) => {
       if (skip.has(entry.name)) continue;
       if (entry.name.startsWith(".") && entry.name !== ".env.example") continue;
 
-      const entryPath = relative(basePath, join(resolved, entry.name));
+      const entryPath = relative(baseResolution.basePath, join(resolved, entry.name));
 
       if (entry.isDirectory()) {
         files.push({ name: entry.name, path: entryPath, type: "directory" });
@@ -235,7 +272,7 @@ router.get("/files", async (req: Request, res: Response) => {
     });
 
     const listing: WorkspaceDirectoryListing = {
-      path: relative(basePath, resolved) || ".",
+      path: relative(baseResolution.basePath, resolved) || ".",
       entries: files,
     };
     return res.json(listing);
@@ -252,10 +289,13 @@ router.get("/file", async (req: Request, res: Response) => {
 
   if (!filePath) return res.status(400).json({ error: "path is required" });
 
-  const basePath = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
 
-  const resolved = join(basePath, filePath);
-  if (!resolved.startsWith(basePath)) {
+  const resolved = resolveScopedPath(baseResolution.basePath, filePath);
+  if (!resolved) {
     return res.status(403).json({ error: "Path escapes project root" });
   }
 
@@ -292,10 +332,13 @@ router.post("/file", async (req: Request, res: Response) => {
     return res.status(400).json({ error: "path and content are required" });
   }
 
-  const basePath = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
 
-  const resolved = join(basePath, filePath);
-  if (!resolved.startsWith(basePath)) {
+  const resolved = resolveScopedPath(baseResolution.basePath, filePath);
+  if (!resolved) {
     return res.status(403).json({ error: "Path escapes project root" });
   }
 
@@ -313,10 +356,13 @@ router.post("/file", async (req: Request, res: Response) => {
 router.get("/git/status", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
 
-  const cwd = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
 
   try {
-    return res.json(getGitStatusSnapshot(cwd));
+    return res.json(getGitStatusSnapshot(baseResolution.basePath));
   } catch {
     const status: WorkspaceGitStatus = {
       branch: "unknown",
@@ -344,16 +390,19 @@ router.get("/git/diff", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
   const filePath = req.query.file as string | undefined;
 
-  const cwd = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
 
   try {
     if (!filePath) {
-      const diff = buildDiffForTrackedFile(cwd, ".");
+      const diff = buildDiffForTrackedFile(baseResolution.basePath, ".");
       const response: WorkspaceGitDiffResponse = { diff, file: null };
       return res.json(response);
     }
 
-    const snapshot = getGitStatusSnapshot(cwd);
+    const snapshot = getGitStatusSnapshot(baseResolution.basePath);
     const fileStatus = snapshot.files.find((entry) => entry.path === filePath);
     if (!fileStatus) {
       const response: WorkspaceGitDiffResponse = { diff: "", file: null };
@@ -361,8 +410,8 @@ router.get("/git/diff", async (req: Request, res: Response) => {
     }
 
     const diff = fileStatus.untracked
-      ? buildDiffForUntrackedFile(cwd, filePath)
-      : buildDiffForTrackedFile(cwd, filePath);
+      ? buildDiffForUntrackedFile(baseResolution.basePath, filePath)
+      : buildDiffForTrackedFile(baseResolution.basePath, filePath);
 
     const response: WorkspaceGitDiffResponse = {
       diff,
@@ -390,7 +439,11 @@ router.post("/git/stage", async (req: Request, res: Response) => {
     mode?: "stage" | "unstage";
   } = req.body ?? {};
 
-  const cwd = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
+  const cwd = baseResolution.basePath;
   const action = mode === "unstage" ? "unstage" : "stage";
 
   try {
@@ -436,7 +489,11 @@ router.post("/git/commit", async (req: Request, res: Response) => {
     all?: boolean;
   } = req.body ?? {};
 
-  const cwd = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
+  const cwd = baseResolution.basePath;
   const commitMessage = message?.trim();
 
   if (!commitMessage) {
@@ -471,7 +528,11 @@ router.get("/git/log", async (req: Request, res: Response) => {
   const projectKey = req.query.project as string | undefined;
   const limit = Math.min(Number(req.query.limit) || 20, 100);
 
-  const cwd = await resolveProjectBasePath(projectKey);
+  const baseResolution = await resolveProjectBasePath(projectKey);
+  if (!baseResolution.ok) {
+    return res.status(baseResolution.status).json({ error: baseResolution.error });
+  }
+  const cwd = baseResolution.basePath;
 
   try {
     const raw = runGitCommand(
